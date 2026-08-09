@@ -93,47 +93,6 @@ function mapMoodToKey(rawMood) {
   return 'MOOD_HEARTBREAK';
 }
 
-function parseCSV(text) {
-  const lines = text.split('\n').filter(line => line.trim().length > 0);
-  const results = [];
-
-  for (let line of lines) {
-    if (line.toLowerCase().startsWith('name,title,body')) continue;
-
-    const row = [];
-    let insideQuotes = false;
-    let currentField = '';
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (insideQuotes && line[i + 1] === '"') {
-          currentField += '"';
-          i++;
-        } else {
-          insideQuotes = !insideQuotes;
-        }
-      } else if (char === ',' && !insideQuotes) {
-        row.push(currentField.trim());
-        currentField = '';
-      } else {
-        currentField += char;
-      }
-    }
-    row.push(currentField.trim());
-
-    if (row.length >= 3) {
-      results.push({
-        name: row[0],
-        title: row[1],
-        body: row[2],
-        mood: mapMoodToKey(row[3] || '')
-      });
-    }
-  }
-  return results;
-}
-
 function toBoldUnicode(str) {
   const map = {
     A: '𝗔', B: '𝗕', C: '𝗖', D: '𝗗', E: '𝗘', F: '𝗙', G: '𝗚', H: '𝗛', I: '𝗜', J: '𝗝', K: '𝗞', L: '𝗟', M: '𝗠', N: '𝗡', O: '𝗢', P: '𝗣', Q: '𝗤', R: '𝗥', S: '𝗦', T: '𝗧', U: '𝗨', V: '𝗩', W: '𝗪', X: '𝗫', Y: '𝗬', Z: '𝗭',
@@ -365,7 +324,6 @@ async function registerPersistentMenu() {
         ]
       })
     });
-    console.log('Persistent Menu registered successfully!');
   } catch (err) {
     console.error('Persistent Menu Registration Error:', err);
   }
@@ -506,7 +464,7 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
     return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v2.9)\n\n• Restored Persistent Menu integration.\n• Enhanced pagination controls (Max 5 items per page).`,
+      text: `📜 PLATFORM CHANGELOG (v2.8)\n\n• Added native Messenger typing indicator bubbles during read delays.\n• Integrated broadcast segmentation (Target All Users or VIP Members only).`,
       quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
     });
   }
@@ -520,6 +478,45 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'VIEW_STATS') {
     if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
     return renderAdminPanel(senderId, userData);
+  }
+
+  if (input === 'ADMIN_BROADCAST_START') {
+    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
+    setUserState(senderId, { step: 'WAITING_BROADCAST_SEGMENT' });
+    return sendMessage(senderId, {
+      text: `📢 BROADCAST SEGMENTATION\n\nWho would you like to send this announcement to?`,
+      quick_replies: [
+        { content_type: 'text', title: '👥 All Users', payload: 'BC_TARGET_ALL' },
+        { content_type: 'text', title: '🌟 VIP Members Only', payload: 'BC_TARGET_VIP' },
+        { content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }
+      ]
+    });
+  }
+
+  if (currentState?.step === 'WAITING_BROADCAST_SEGMENT') {
+    let targetSegment = 'ALL';
+    if (input === 'BC_TARGET_VIP') targetSegment = 'VIP';
+    setUserState(senderId, { step: 'WAITING_BROADCAST_MSG', targetSegment });
+    return sendMessage(senderId, {
+      text: `📢 Enter the announcement text for [ ${targetSegment} ] users:`,
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    });
+  }
+
+  if (currentState?.step === 'WAITING_BROADCAST_MSG') {
+    const targetSegment = currentState.targetSegment || 'ALL';
+    clearUserState(senderId);
+
+    const allUsers = await firebaseFetch('users') || {};
+    for (const [uId, uData] of Object.entries(allUsers)) {
+      if (targetSegment === 'VIP' && !uData.isVIP) continue;
+      await sendMessage(uId, { text: `📢 ANNOUNCEMENT (${targetSegment})\n\n"${input}"\n\n— Pages He Never Sent` });
+    }
+
+    return sendMessage(senderId, {
+      text: `✅ Broadcast successfully sent to [ ${targetSegment} ] users!`,
+      quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
+    });
   }
 
   if (input === 'VIEW_PENDING_PAYMENTS') {
@@ -831,7 +828,6 @@ async function handleCommand(senderId, rawInput) {
     });
   }
 
-  // --- LEAVE MESSAGE ---
   if (lowerInput.startsWith('/message') || lowerInput === '💬 leave message') {
     if ((userData.messagesToday || 0) >= 2) {
       return sendMessage(senderId, {
@@ -1361,5 +1357,5 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await autoSeedDataOnStartup();
-  await registerPersistentMenu();
+  await registerPersistent Menu();
 });

@@ -658,7 +658,7 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
     return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v3.0)\n\n• Overhauled command router with strict priority evaluation.\n• Zero accidental dashboard redirections.`,
+      text: `📜 PLATFORM CHANGELOG (v3.1)\n\n• Removed all typing delays except for Random Page.\n• Full redirection cleanup.`,
       quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
     });
   }
@@ -743,7 +743,7 @@ async function handleCommand(senderId, rawInput) {
     const data = await firebaseFetch(`messages/${msgId}`);
     if (!data) return sendDashboard(senderId, userData);
 
-    return renderFullMessageWithDelay(senderId, msgId, data, quota, userData.role);
+    return renderFullMessageWithoutDelay(senderId, msgId, data, quota, userData.role);
   }
 
   if (input.startsWith('RATE_')) {
@@ -1094,14 +1094,13 @@ async function handleCommand(senderId, rawInput) {
         if (!quota.allowed) {
           return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS!`, quick_replies: getDynamicQuickReplies('SEARCH', userData.role) });
         }
-        return renderFullMessageWithDelay(senderId, msg.id, msg, quota, userData.role);
+        return renderFullMessageWithoutDelay(senderId, msg.id, msg, quota, userData.role);
       }
     }
   }
 
   // --- 7. ADMIN ACTION PAYLOADS ---
   if (input.startsWith('ACCEPT_VIP1_') || input.startsWith('ACCEPT_VIP2_') || input.startsWith('ACCEPT_BUY_') || input.startsWith('REJECT_BUY_') || input.startsWith('APPROVE_SUBANN_') || input.startsWith('REJECT_SUBANN_START_') || input.startsWith('DEL_MSG_') || input.startsWith('KEEP_MSG_')) {
-    // These are handled or routed via specific triggers above, but if caught here as admin payloads, route safely
     if (input.startsWith('DEL_MSG_')) {
       const msgId = input.replace('DEL_MSG_', '');
       await firebaseFetch(`messages/${msgId}`, { method: 'DELETE' });
@@ -1222,6 +1221,7 @@ async function renderAdminPanel(senderId, userData) {
   });
 }
 
+// DELAY ONLY APPLIED FOR RANDOM CHAT
 async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role) {
   const userData = await ensureUser(senderId);
   const ratingDisp = formatRatingDisplay(data.ratingSum, data.ratingCount);
@@ -1242,6 +1242,7 @@ async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role
     ]
   };
 
+  // Delay / typing_on ONLY for Random chat if user is not VIP Level 2
   if (userData.vipLevel === 2) {
     return sendMessage(senderId, payload);
   } else {
@@ -1249,6 +1250,29 @@ async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role
     await new Promise(resolve => setTimeout(resolve, 5000));
     return sendMessage(senderId, payload);
   }
+}
+
+// INSTANT RENDERING FOR SEARCH / TRENDING / MOODS (No delay)
+async function renderFullMessageWithoutDelay(senderId, msgId, data, quotaInfo, role) {
+  const ratingDisp = formatRatingDisplay(data.ratingSum, data.ratingCount);
+  const quotaNote = `\n\n🪙 (10 Points deducted for reading)`;
+  const text = `📖 TO: ${data.displayName}\n🏷️ TITLE: ${data.title}\n👤 USER: ${data.authorCode || '#SYS999'}\n⭐ RATING: ${ratingDisp}\n\n"${data.body}"${quotaNote}`;
+
+  const payload = {
+    text,
+    quick_replies: [
+      { content_type: 'text', title: '⭐ 1', payload: `RATE_${msgId}_1` },
+      { content_type: 'text', title: '⭐ 2', payload: `RATE_${msgId}_2` },
+      { content_type: 'text', title: '⭐ 3', payload: `RATE_${msgId}_3` },
+      { content_type: 'text', title: '⭐ 4', payload: `RATE_${msgId}_4` },
+      { content_type: 'text', title: '⭐ 5', payload: `RATE_${msgId}_5` },
+      { content_type: 'text', title: '🚩 Report', payload: `REPORT_START_${msgId}` },
+      { content_type: 'text', title: '📜 Read Another', payload: '/random' },
+      { content_type: 'text', title: '📊 Dashboard', payload: 'USER_DASHBOARD' }
+    ]
+  };
+
+  return sendMessage(senderId, payload);
 }
 
 async function sendDashboard(senderId, userData) {

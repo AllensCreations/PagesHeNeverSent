@@ -281,7 +281,7 @@ function getDynamicQuickReplies(activeContext, role = 'user') {
     { id: 'TRENDING', content_type: 'text', title: '🔥 Trending Pages', payload: '/trending' },
     { id: 'MOODS', content_type: 'text', title: '🎭 Browse Moods', payload: 'BROWSE_MOODS' },
     { id: 'SUB_ANNOUNCE', content_type: 'text', title: '📣 Promote Post', payload: 'PROMOTED_ANNOUNCE_MENU' },
-    { id: 'VIP', content_type: 'text', title: '🌟 Buy VIP', payload: 'VIP_UPGRADE_MENU' },
+    { id: 'VIP', content_type: 'text', title: '🌟 Upgrade to VIP', payload: 'VIP_UPGRADE_MENU' },
     { id: 'CHANGELOG', content_type: 'text', title: '📜 Changelog', payload: 'CHANGELOG_VIEW' },
     { id: 'DASHBOARD', content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
   ];
@@ -344,6 +344,33 @@ async function getActiveSubAnnouncements() {
   return { active: active.slice(0, 3), queued };
 }
 
+async function registerPersistentMenu() {
+  if (!PAGE_ACCESS_TOKEN) return;
+  try {
+    await fetch(`https://graph.facebook.com/v18.0/me/messenger_profile?access_token=${PAGE_ACCESS_TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        persistent_menu: [
+          {
+            locale: 'default',
+            composer_input_disabled: false,
+            call_to_actions: [
+              { type: 'postback', title: '📜 Random Page', payload: '/random' },
+              { type: 'postback', title: '🔍 Search Name', payload: '/search' },
+              { type: 'postback', title: '💬 Leave Message', payload: '/message' },
+              { type: 'postback', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
+            ]
+          }
+        ]
+      })
+    });
+    console.log('Persistent Menu registered successfully!');
+  } catch (err) {
+    console.error('Persistent Menu Registration Error:', err);
+  }
+}
+
 async function autoSeedDataOnStartup() {
   if (!Array.isArray(seedData) || seedData.length === 0) return;
   const existingMsgs = await firebaseFetch('messages') || {};
@@ -370,32 +397,6 @@ async function autoSeedDataOnStartup() {
       });
       existingTitles.add(itemTitleKey);
     }
-  }
-}
-
-async function setupPersistentMenu() {
-  if (!PAGE_ACCESS_TOKEN) return;
-  try {
-    await fetch(`https://graph.facebook.com/v18.0/me/messenger_profile?access_token=${PAGE_ACCESS_TOKEN}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        persistent_menu: [
-          {
-            locale: 'default',
-            composer_input_disabled: false,
-            call_to_actions: [
-              { type: 'postback', title: '🌟 Buy VIP', payload: 'VIP_UPGRADE_MENU' },
-              { type: 'postback', title: '📜 Changelog', payload: 'CHANGELOG_VIEW' },
-              { type: 'postback', title: 'ℹ️ About', payload: 'ABOUT_VIEW' },
-              { type: 'postback', title: '📜 T&C', payload: 'TC_VIEW' }
-            ]
-          }
-        ]
-      })
-    });
-  } catch (err) {
-    console.error('Persistent Menu Error:', err);
   }
 }
 
@@ -505,32 +506,14 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
     return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v2.8)\n\n• Prioritized quick responses.\n• Native typing indicators.\n• Persistent Menu integration.`,
+      text: `📜 PLATFORM CHANGELOG (v2.9)\n\n• Restored Persistent Menu integration.\n• Enhanced pagination controls (Max 5 items per page).`,
       quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
     });
   }
 
-  if (input === 'ABOUT_VIEW' || lowerInput === 'ℹ️ about') {
-    clearUserState(senderId);
-    return sendMessage(senderId, {
-      text: `ℹ️ ABOUT PAGES HE NEVER SENT\n\nA digital sanctuary where anonymous letters, confessions, and unspoken words find a home. Built to help people express what they could never say out loud.\n\nDeveloped with 💖 for hopeless romantics.`,
-      quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
-    });
-  }
-
-  if (input === 'TC_VIEW' || lowerInput === '📜 t&c') {
-    clearUserState(senderId);
-    return sendMessage(senderId, {
-      text: `📜 TERMS & CONDITIONS & DPA PRIVACY NOTICE\n\n• All messages left become permanent anonymous entries.\n• Data Privacy Act (DPA) compliant: Confessions are stored with unique tracking codes for safety.\n• Be respectful and follow community guidelines.`,
-      quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
-    });
-  }
-
-  // --- STAFF ADMIN PANEL ---
   if (input === 'ADMIN_PANEL' || lowerInput === '📢 staff panel') {
     clearUserState(senderId);
     if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
-
     return renderAdminPanel(senderId, userData);
   }
 
@@ -601,17 +584,17 @@ async function handleCommand(senderId, rawInput) {
       body: JSON.stringify({ vipLocked: newLockState })
     });
     return sendMessage(senderId, {
-      text: `🔒 VIP PURCHASING STATUS UPDATED\n\nVIP Lock is now: ${newLockState ? 'LOCKED (Temporarily Unavailable)' : 'UNLOCKED (Available)'}`,
+      text: `🔒 VIP PURCHASING STATUS UPDATED\n\nVIP Lock is now: ${newLockState ? 'LOCKED' : 'UNLOCKED'}`,
       quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
     });
   }
 
-  if (input === 'VIP_UPGRADE_MENU' || lowerInput === '🌟 buy vip' || lowerInput === 'buy vip' || lowerInput === '🌟 upgrade to vip') {
+  if (input === 'VIP_UPGRADE_MENU' || lowerInput === '🌟 upgrade to vip' || lowerInput === 'buy vip') {
     clearUserState(senderId);
     const settings = await firebaseFetch('settings') || {};
     if (settings.vipLocked) {
       return sendMessage(senderId, {
-        text: `🔒 VIP PURCHASING TEMPORARILY UNAVAILABLE\n\nVIP upgrades are currently locked by administration.`,
+        text: `🔒 VIP PURCHASING TEMPORARILY UNAVAILABLE`,
         quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
       });
     }
@@ -626,14 +609,14 @@ async function handleCommand(senderId, rawInput) {
     if (userData.vipLevel === 1) {
       setUserState(senderId, { step: 'WAITING_VIP_LEVEL_2_REF' });
       return sendMessage(senderId, {
-        text: `🌟 UPGRADE TO VIP LEVEL 2 (₱49 — One-Time Payment)\n\n• Automatic Daily Rewards Claim!\n\nSend ₱49.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nAfter paying, reply below with your 13-digit GCash Reference Number:`,
+        text: `🌟 UPGRADE TO VIP LEVEL 2 (₱49 — One-Time Payment)\n\n• Automatic Daily Rewards Claim!\n\nSend ₱49.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
         quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
       });
     }
 
     setUserState(senderId, { step: 'WAITING_VIP_LEVEL_1_REF' });
     return sendMessage(senderId, {
-      text: `🌟 UPGRADE TO VIP LEVEL 1 (₱99 — One-Time Payment)\n\n• VIP Perks: Earn 100 Points daily upon check-in!\n\nSend ₱99.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nAfter paying, reply below with your 13-digit GCash Reference Number:`,
+      text: `🌟 UPGRADE TO VIP LEVEL 1 (₱99 — One-Time Payment)\n\n• VIP Perks: Earn 100 Points daily upon check-in!\n\nSend ₱99.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
     });
   }
@@ -974,11 +957,6 @@ async function handleCommand(senderId, rawInput) {
     return renderTrendingPages(senderId, 0);
   }
 
-  if (input === 'TRENDING_PAGE_2') {
-    clearUserState(senderId);
-    return renderTrendingPages(senderId, 5);
-  }
-
   if (input === 'SEARCH_OCCASION_START' || lowerInput === 'search occasion') {
     clearUserState(senderId);
     setUserState(senderId, { step: 'WAITING_OCCASION_DATE' });
@@ -1146,7 +1124,7 @@ async function handleCommand(senderId, rawInput) {
     });
   }
 
-  if (input.startsWith('SELECT_MOOD_') || input.startsWith('SELECT_')) {
+  if (input.startsWith('SELECT_MOOD_') || input.startsWith('SELECT_MOOD_')) {
     clearUserState(senderId);
     const selectedMood = input.replace('SELECT_', '');
     const allMessages = await firebaseFetch('messages') || {};
@@ -1382,6 +1360,6 @@ async function sendNextReport(senderId, userData) {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
-  await setupPersistentMenu();
   await autoSeedDataOnStartup();
+  await registerPersistentMenu();
 });

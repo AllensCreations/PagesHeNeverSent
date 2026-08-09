@@ -93,6 +93,47 @@ function mapMoodToKey(rawMood) {
   return 'MOOD_HEARTBREAK';
 }
 
+function parseCSV(text) {
+  const lines = text.split('\n').filter(line => line.trim().length > 0);
+  const results = [];
+
+  for (let line of lines) {
+    if (line.toLowerCase().startsWith('name,title,body')) continue;
+
+    const row = [];
+    let insideQuotes = false;
+    let currentField = '';
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (insideQuotes && line[i + 1] === '"') {
+          currentField += '"';
+          i++;
+        } else {
+          insideQuotes = !insideQuotes;
+        }
+      } else if (char === ',' && !insideQuotes) {
+        row.push(currentField.trim());
+        currentField = '';
+      } else {
+        currentField += char;
+      }
+    }
+    row.push(currentField.trim());
+
+    if (row.length >= 3) {
+      results.push({
+        name: row[0],
+        title: row[1],
+        body: row[2],
+        mood: mapMoodToKey(row[3] || '')
+      });
+    }
+  }
+  return results;
+}
+
 function toBoldUnicode(str) {
   const map = {
     A: '𝗔', B: '𝗕', C: '𝗖', D: '𝗗', E: '𝗘', F: '𝗙', G: '𝗚', H: '𝗛', I: '𝗜', J: '𝗝', K: '𝗞', L: '𝗟', M: '𝗠', N: '𝗡', O: '𝗢', P: '𝗣', Q: '𝗤', R: '𝗥', S: '𝗦', T: '𝗧', U: '𝗨', V: '𝗩', W: '𝗪', X: '𝗫', Y: '𝗬', Z: '𝗭',
@@ -1357,5 +1398,5 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await autoSeedDataOnStartup();
-  await registerPersistent Menu();
+  await registerPersistentMenu();
 });

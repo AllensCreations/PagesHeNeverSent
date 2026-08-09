@@ -164,31 +164,8 @@ async function firebaseFetch(path, options = {}) {
   }
 }
 
-async function sendSenderAction(recipientId, action = 'typing_on') {
+async function sendMessage(recipientId, payload) {
   if (!PAGE_ACCESS_TOKEN) return;
-  try {
-    await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        sender_action: action
-      })
-    });
-  } catch (err) {
-    console.error('Sender Action Error:', err);
-  }
-}
-
-async function sendMessage(recipientId, payload, useTypingDelay = false) {
-  if (!PAGE_ACCESS_TOKEN) return;
-  
-  if (useTypingDelay) {
-    await sendSenderAction(recipientId, 'typing_on');
-    await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds typing indicator
-  }
-  
-  await sendSenderAction(recipientId, 'typing_off');
   try {
     const res = await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
       method: 'POST',
@@ -495,7 +472,7 @@ async function handleCommand(senderId, rawInput) {
       quick_replies: [
         { content_type: 'text', title: '✅ I Agree & Enter', payload: 'ACCEPT_TC' }
       ]
-    }, true);
+    });
   }
 
   if (input === 'CANCEL_ACTION' || lowerInput === '❌ cancel' || lowerInput === 'cancel') {
@@ -511,9 +488,9 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
     return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v3.0)\n\n• Added 3-sec typing indicator for user messages.\n• Added quick response options after rating messages (Read Again, etc.).`,
+      text: `📜 PLATFORM CHANGELOG (v3.1)\n\n• All delays completely removed for instant delivery.\n• Added post-rating quick responses and pagination.`,
       quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
-    }, true);
+    });
   }
 
   if (input === 'ADMIN_PANEL' || lowerInput === '📢 staff panel') {
@@ -537,7 +514,7 @@ async function handleCommand(senderId, rawInput) {
         { content_type: 'text', title: '🌟 VIP Members Only', payload: 'BC_TARGET_VIP' },
         { content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }
       ]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_BROADCAST_SEGMENT') {
@@ -547,7 +524,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `📢 Enter the announcement text for [ ${targetSegment} ] users:`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_BROADCAST_MSG') {
@@ -557,13 +534,13 @@ async function handleCommand(senderId, rawInput) {
     const allUsers = await firebaseFetch('users') || {};
     for (const [uId, uData] of Object.entries(allUsers)) {
       if (targetSegment === 'VIP' && !uData.isVIP) continue;
-      await sendMessage(uId, { text: `📢 ANNOUNCEMENT (${targetSegment})\n\n"${input}"\n\n— Pages He Never Sent` }, true);
+      await sendMessage(uId, { text: `📢 ANNOUNCEMENT (${targetSegment})\n\n"${input}"\n\n— Pages He Never Sent` });
     }
 
     return sendMessage(senderId, {
       text: `✅ Broadcast successfully sent to [ ${targetSegment} ] users!`,
       quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-    }, true);
+    });
   }
 
   if (input === 'VIEW_PENDING_PAYMENTS') {
@@ -573,7 +550,7 @@ async function handleCommand(senderId, rawInput) {
     const entries = Object.entries(pendingPayments);
 
     if (entries.length === 0) {
-      await sendMessage(senderId, { text: `💳 PENDING PAYMENTS\n\nThere are currently no pending GCash payments to review.` }, true);
+      await sendMessage(senderId, { text: `💳 PENDING PAYMENTS\n\nThere are currently no pending GCash payments to review.` });
       return renderAdminPanel(senderId, userData);
     }
 
@@ -585,7 +562,7 @@ async function handleCommand(senderId, rawInput) {
         { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${currentPay.senderId}_${payKey}` },
         { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
       ]
-    }, true);
+    });
   }
 
   if (input === 'REVIEW_SUB_ANNOUNCEMENTS') {
@@ -597,7 +574,7 @@ async function handleCommand(senderId, rawInput) {
       .filter(a => a.status === 'PENDING_APPROVAL');
 
     if (pendingList.length === 0) {
-      await sendMessage(senderId, { text: '🛡️ No pending SubAnnouncements to review.' }, true);
+      await sendMessage(senderId, { text: '🛡️ No pending SubAnnouncements to review.' });
       return renderAdminPanel(senderId, userData);
     }
 
@@ -609,7 +586,7 @@ async function handleCommand(senderId, rawInput) {
         { content_type: 'text', title: '❌ Reject & Refund', payload: `REJECT_SUBANN_START_${current.id}` },
         { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
       ]
-    }, true);
+    });
   }
 
   if (input === 'STAFF_REPORTS' || lowerInput === '/reports') {
@@ -630,7 +607,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `🔒 VIP PURCHASING STATUS UPDATED\n\nVIP Lock is now: ${newLockState ? 'LOCKED' : 'UNLOCKED'}`,
       quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-    }, true);
+    });
   }
 
   if (input === 'VIP_UPGRADE_MENU' || lowerInput === '🌟 upgrade to vip' || lowerInput === 'buy vip') {
@@ -640,14 +617,14 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: `🔒 VIP PURCHASING TEMPORARILY UNAVAILABLE`,
         quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      }, true);
+      });
     }
 
     if (userData.vipLevel === 2) {
       return sendMessage(senderId, {
         text: `🌟 VIP STATUS ACTIVE\n\nYou already own VIP Level 1 and VIP Level 2!`,
         quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      }, true);
+      });
     }
 
     if (userData.vipLevel === 1) {
@@ -655,14 +632,14 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: `🌟 UPGRADE TO VIP LEVEL 2 (₱49 — One-Time Payment)\n\n• Automatic Daily Rewards Claim!\n\nSend ₱49.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
         quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      }, true);
+      });
     }
 
     setUserState(senderId, { step: 'WAITING_VIP_LEVEL_1_REF' });
     return sendMessage(senderId, {
       text: `🌟 UPGRADE TO VIP LEVEL 1 (₱99 — One-Time Payment)\n\n• VIP Perks: Earn 100 Points daily upon check-in!\n\nSend ₱99.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_VIP_LEVEL_1_REF') {
@@ -687,13 +664,13 @@ async function handleCommand(senderId, rawInput) {
           { content_type: 'text', title: '✅ Accept VIP 1', payload: `ACCEPT_VIP1_${senderId}_${payKey}` },
           { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${senderId}_${payKey}` }
         ]
-      }, true);
+      });
     }
 
     return sendMessage(senderId, {
       text: `⌛ VIP 1 PAYMENT SUBMITTED\n\nReference #: ${gcashRef}\nVerification in progress.`,
       quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_VIP_LEVEL_2_REF') {
@@ -718,13 +695,13 @@ async function handleCommand(senderId, rawInput) {
           { content_type: 'text', title: '✅ Accept VIP 2', payload: `ACCEPT_VIP2_${senderId}_${payKey}` },
           { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${senderId}_${payKey}` }
         ]
-      }, true);
+      });
     }
 
     return sendMessage(senderId, {
       text: `⌛ VIP 2 PAYMENT SUBMITTED\n\nReference #: ${gcashRef}\nVerification in progress.`,
       quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-    }, true);
+    });
   }
 
   if (input.startsWith('ACCEPT_VIP1_')) {
@@ -741,8 +718,8 @@ async function handleCommand(senderId, rawInput) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isVIP: true, vipLevel: 1 })
       });
-      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 1!\n\nEnjoy your 100 Points daily check-in rewards.`, quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
-      return sendMessage(senderId, { text: `✅ Approved VIP Level 1 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 1!\n\nEnjoy your 100 Points daily check-in rewards.`, quick_replies: getDynamicQuickReplies('DASHBOARD') });
+      return sendMessage(senderId, { text: `✅ Approved VIP Level 1 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] });
     }
   }
 
@@ -760,8 +737,8 @@ async function handleCommand(senderId, rawInput) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ vipLevel: 2 })
       });
-      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 2!\n\nAutomatic daily reward claim enabled (200 Points/day)!`, quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
-      return sendMessage(senderId, { text: `✅ Approved VIP Level 2 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 2!\n\nAutomatic daily reward claim enabled (200 Points/day)!`, quick_replies: getDynamicQuickReplies('DASHBOARD') });
+      return sendMessage(senderId, { text: `✅ Approved VIP Level 2 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] });
     }
   }
 
@@ -778,8 +755,8 @@ async function handleCommand(senderId, rawInput) {
     if (targetUser) {
       const newCoins = (targetUser.rCoins || 0) + coinAmount;
       await firebaseFetch(`users/${targetUserId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rCoins: newCoins, isVIP: true }) });
-      await sendMessage(targetUserId, { text: `🎉 PAYMENT VERIFIED & APPROVED!\n\nYour account has been credited with +${coinAmount} Points and upgraded to VIP Status!\nNew Balance: ${newCoins} Points.`, quick_replies: getDynamicQuickReplies('DASHBOARD', targetUser.role) }, true);
-      return sendMessage(senderId, { text: `✅ Approved ${coinAmount} Points + VIP for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+      await sendMessage(targetUserId, { text: `🎉 PAYMENT VERIFIED & APPROVED!\n\nYour account has been credited with +${coinAmount} Points and upgraded to VIP Status!\nNew Balance: ${newCoins} Points.`, quick_replies: getDynamicQuickReplies('DASHBOARD', targetUser.role) });
+      return sendMessage(senderId, { text: `✅ Approved ${coinAmount} Points + VIP for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] });
     }
   }
 
@@ -791,8 +768,8 @@ async function handleCommand(senderId, rawInput) {
 
     if (payKey) await firebaseFetch(`pending_payments/${payKey}`, { method: 'DELETE' });
 
-    await sendMessage(targetUserId, { text: `❌ PAYMENT UNVERIFIED\n\nYour purchase request could not be verified.`, quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
-    return sendMessage(senderId, { text: `❌ Purchase rejected for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+    await sendMessage(targetUserId, { text: `❌ PAYMENT UNVERIFIED\n\nYour purchase request could not be verified.`, quick_replies: getDynamicQuickReplies('DASHBOARD') });
+    return sendMessage(senderId, { text: `❌ Purchase rejected for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] });
   }
 
   if (input.startsWith('APPROVE_SUBANN_')) {
@@ -800,7 +777,7 @@ async function handleCommand(senderId, rawInput) {
     const subAnnId = input.replace('APPROVE_SUBANN_', '');
 
     const subAnn = await firebaseFetch(`sub_announcements/${subAnnId}`);
-    if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' }, true);
+    if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' });
 
     await firebaseFetch(`sub_announcements/${subAnnId}`, {
       method: 'PATCH',
@@ -816,18 +793,18 @@ async function handleCommand(senderId, rawInput) {
       await sendMessage(subAnn.senderId, {
         text: `🎉 SUB-ANNOUNCEMENT APPROVED & QUEUED!\n\nYour announcement was approved and is in queue (Position #${qPos}).`,
         quick_replies: getDynamicQuickReplies('DASHBOARD')
-      }, true);
+      });
     } else {
       await sendMessage(subAnn.senderId, {
         text: `🎉 SUB-ANNOUNCEMENT IS NOW LIVE!\n\nYour announcement is now live on the Dashboard for ${subAnn.days} Day(s)!`,
         quick_replies: getDynamicQuickReplies('DASHBOARD')
-      }, true);
+      });
     }
 
     return sendMessage(senderId, {
       text: `✅ Approved SubAnnouncement ${subAnnId}.`,
       quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-    }, true);
+    });
   }
 
   if (input.startsWith('REJECT_SUBANN_START_')) {
@@ -838,7 +815,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `❌ REJECTING SUB-ANNOUNCEMENT (${subAnnId})\n\nReply below with the reason for rejection:`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_REJECT_REASON') {
@@ -846,7 +823,7 @@ async function handleCommand(senderId, rawInput) {
     clearUserState(senderId);
 
     const subAnn = await firebaseFetch(`sub_announcements/${subAnnId}`);
-    if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' }, true);
+    if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' });
 
     await firebaseFetch(`sub_announcements/${subAnnId}`, {
       method: 'PATCH',
@@ -866,22 +843,22 @@ async function handleCommand(senderId, rawInput) {
       await sendMessage(subAnn.senderId, {
         text: `❌ SUB-ANNOUNCEMENT REJECTED & REFUNDED\n\nReason: "${input}"\n\n🎉 Full Refund Credited: +${subAnn.points} Points`,
         quick_replies: getDynamicQuickReplies('DASHBOARD', targetUser.role)
-      }, true);
+      });
     }
 
     return sendMessage(senderId, {
       text: `❌ Rejected & refunded SubAnnouncement ${subAnnId}.`,
       quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-    }, true);
+    });
   }
 
-  // --- LEAVE MESSAGE (With 3-sec typing indicator) ---
+  // --- LEAVE MESSAGE ---
   if (lowerInput.startsWith('/message') || lowerInput === '💬 leave message') {
     if ((userData.messagesToday || 0) >= 2) {
       return sendMessage(senderId, {
         text: `⚠️ DAILY MESSAGE LIMIT REACHED!\n\nYou can only leave up to 2 messages per day.`,
         quick_replies: getDynamicQuickReplies('LEAVE', userData.role)
-      }, true);
+      });
     }
 
     const targetName = input.startsWith('/message') ? input.substring(8).trim() : '';
@@ -890,26 +867,26 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: '✉️ Type the Full Name of the person this message is for:',
         quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      }, true);
+      });
     }
     setUserState(senderId, { step: 'WAITING_TITLE', targetName });
     return sendMessage(senderId, {
       text: `Creating a message for "${targetName}".\n\nReply with a Title:`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_TARGET_NAME') {
     if (containsBadWords(input)) {
-      return sendMessage(senderId, { text: '⚠️ Inappropriate name detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+      return sendMessage(senderId, { text: '⚠️ Inappropriate name detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
     }
     setUserState(senderId, { step: 'WAITING_TITLE', targetName: input });
-    return sendMessage(senderId, { text: `Creating a message for "${input}".\n\nReply with a Title:`, quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+    return sendMessage(senderId, { text: `Creating a message for "${input}".\n\nReply with a Title:`, quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
   }
 
   if (currentState?.step === 'WAITING_TITLE') {
     if (containsBadWords(input)) {
-      return sendMessage(senderId, { text: '⚠️ Inappropriate title detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+      return sendMessage(senderId, { text: '⚠️ Inappropriate title detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
     }
     setUserState(senderId, { ...currentState, title: input, step: 'WAITING_MOOD' });
 
@@ -919,7 +896,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: 'Title saved! Choose a Mood Category for this confession:',
       quick_replies: moodReplies
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_MOOD' && input.startsWith('SET_MOOD_')) {
@@ -928,20 +905,20 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: 'Mood set! Now type your complete message below:',
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_BODY') {
     if (!currentState.targetName || !currentState.title) {
       clearUserState(senderId);
-      return sendMessage(senderId, { text: '⚠️ Session expired.', quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) }, true);
+      return sendMessage(senderId, { text: '⚠️ Session expired.', quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) });
     }
 
     if (containsBadWords(input) || isSpamOrGibberish(input)) {
       return sendMessage(senderId, {
         text: '⚠️ Message rejected! Please write a genuine letter (>25 characters):',
         quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      }, true);
+      });
     }
 
     const { targetName, title, mood } = currentState;
@@ -976,7 +953,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `🕊️ Your unsent letter for "${targetName}" has been safely archived!\n\n🎉 You earned +5 Points for writing!`,
       quick_replies: getDynamicQuickReplies('LEAVE', userData.role)
-    }, true);
+    });
   }
 
   // --- RANDOM PAGE ---
@@ -984,7 +961,7 @@ async function handleCommand(senderId, rawInput) {
     clearUserState(senderId);
     const quota = await checkReadingQuota(senderId, userData);
     if (!quota.allowed) {
-      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('RANDOM', userData.role) }, true);
+      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('RANDOM', userData.role) });
     }
 
     const allMessages = await firebaseFetch('messages') || {};
@@ -992,7 +969,7 @@ async function handleCommand(senderId, rawInput) {
     if (entries.length === 0) return sendDashboard(senderId, userData);
 
     const [msgId, randomMsg] = entries[Math.floor(Math.random() * entries.length)];
-    return renderFullMessageWithDelay(senderId, msgId, randomMsg, quota, userData.role);
+    return renderFullMessageWithoutDelay(senderId, msgId, randomMsg, quota, userData.role);
   }
 
   // --- TRENDING PAGES ---
@@ -1007,7 +984,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `📅 SEARCH BY OCCASION (MM/DD)\n\nEnter a date to find birthday, anniversary, or special occasion messages (Example: 08/09):`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    }, true);
+    });
   }
 
   if (currentState?.step === 'WAITING_OCCASION_DATE') {
@@ -1023,7 +1000,7 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: `ℹ️ No occasion messages found matching date "${dateQuery}".`,
         quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      }, true);
+      });
     }
 
     return renderSearchResults(senderId, matches, 0, `📅 OCCASION (${dateQuery})`);
@@ -1033,7 +1010,7 @@ async function handleCommand(senderId, rawInput) {
     const targetName = input.startsWith('/search') ? input.substring(7).trim().toLowerCase() : '';
     if (!targetName) {
       setUserState(senderId, { step: 'WAITING_SEARCH_NAME' });
-      return sendMessage(senderId, { text: '🔍 Type the Full Name or part of the name of the recipient you wish to search for:', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+      return sendMessage(senderId, { text: '🔍 Type the Full Name or part of the name of the recipient you wish to search for:', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
     }
     clearUserState(senderId);
     return executeSearch(senderId, targetName);
@@ -1065,9 +1042,9 @@ async function handleCommand(senderId, rawInput) {
 
       const quota = await checkReadingQuota(senderId, userData);
       if (!quota.allowed) {
-        return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS!`, quick_replies: getDynamicQuickReplies('SEARCH', userData.role) }, true);
+        return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS!`, quick_replies: getDynamicQuickReplies('SEARCH', userData.role) });
       }
-      return renderFullMessageWithDelay(senderId, msg.id, msg, quota, userData.role);
+      return renderFullMessageWithoutDelay(senderId, msg.id, msg, quota, userData.role);
     }
   }
 
@@ -1075,17 +1052,17 @@ async function handleCommand(senderId, rawInput) {
     clearUserState(senderId);
     const quota = await checkReadingQuota(senderId, userData);
     if (!quota.allowed) {
-      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) }, true);
+      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) });
     }
 
     const msgId = input.replace('READ_', '');
     const data = await firebaseFetch(`messages/${msgId}`);
     if (!data) return sendDashboard(senderId, userData);
 
-    return renderFullMessageWithDelay(senderId, msgId, data, quota, userData.role);
+    return renderFullMessageWithoutDelay(senderId, msgId, data, quota, userData.role);
   }
 
-  // --- RATING CONFIRMATION WITH NEW QUICK RESPONSES (Read Again, etc.) ---
+  // --- RATING CONFIRMATION WITH NEW QUICK RESPONSES ---
   if (input.startsWith('RATE_')) {
     const parts = input.split('_');
     const msgId = parts[1];
@@ -1096,7 +1073,7 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: `⚠️ You have already rated this message once!`,
         quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      }, true);
+      });
     }
 
     ratedMap[msgId] = score;
@@ -1125,7 +1102,7 @@ async function handleCommand(senderId, rawInput) {
         { content_type: 'text', title: '🔥 Trending Pages', payload: '/trending' },
         { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
       ]
-    }, true);
+    });
   }
 
   if (input.startsWith('REPORT_START_')) {
@@ -1138,7 +1115,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `🛡️ SELECT REPORT REASON:`,
       quick_replies: reasonReplies
-    }, true);
+    });
   }
 
   if (input.startsWith('SUBMIT_REPORT_')) {
@@ -1160,7 +1137,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `🛡️ Report submitted (${reason}). If approved, you will be rewarded +1 Point!`,
       quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-    }, true);
+    });
   }
 
   if (input === 'BROWSE_MOODS' || lowerInput === '🎭 browse moods') {
@@ -1171,7 +1148,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `🎭 BROWSE BY MOOD\n\nSelect a mood category:`,
       quick_replies: quickReplies
-    }, true);
+    });
   }
 
   if (input.startsWith('SELECT_MOOD_') || input.startsWith('SELECT_MOOD_')) {
@@ -1190,7 +1167,7 @@ async function handleCommand(senderId, rawInput) {
           { content_type: 'text', title: '🎭 Browse Moods', payload: 'BROWSE_MOODS' },
           { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
         ]
-      }, true);
+      });
     }
 
     return renderSearchResults(senderId, matches, 0, `🎭 MOOD (${selectedMood})`);
@@ -1205,7 +1182,7 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: `📅 DAILY CHECK-IN\n\nStreak: ${userData.streak || 0} Day(s) (${badge})\nYou have already claimed your daily reward today!`,
         quick_replies: getDynamicQuickReplies('CHECKIN', userData.role)
-      }, true);
+      });
     }
 
     const yesterday = new Date();
@@ -1229,7 +1206,7 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `📅 CHECK-IN SUCCESSFUL!\n\n🔥 Current Streak: ${newStreak} Day(s)\n🏅 Badge: ${badge}\n🪙 Earned: +${totalReward} Points\n💰 Total Balance: ${newCoins} Points`,
       quick_replies: getDynamicQuickReplies('CHECKIN', userData.role)
-    }, true);
+    });
   }
 
   clearUserState(senderId);
@@ -1260,7 +1237,7 @@ async function renderSearchResults(senderId, allMatches, pageIndex, searchTitle)
   quickReplies.push({ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' });
 
   setUserState(senderId, { step: 'VIEWING_SEARCH_RESULTS', searchResults: sliceMatches, allMatches, pageIndex, searchTitle });
-  return sendMessage(senderId, { text, quick_replies: quickReplies }, true);
+  return sendMessage(senderId, { text, quick_replies: quickReplies });
 }
 
 async function renderTrendingPages(senderId, pageIndex) {
@@ -1271,7 +1248,7 @@ async function renderTrendingPages(senderId, pageIndex) {
     .sort((a, b) => (b.ratingSum / b.ratingCount) - (a.ratingSum / a.ratingCount));
 
   if (sorted.length === 0) {
-    return sendMessage(senderId, { text: 'ℹ️ No rated messages yet.', quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
+    return sendMessage(senderId, { text: 'ℹ️ No rated messages yet.', quick_replies: getDynamicQuickReplies('DASHBOARD') });
   }
 
   return renderSearchResults(senderId, sorted, pageIndex, '🔥 TRENDING PAGES');
@@ -1286,7 +1263,7 @@ async function executeSearch(senderId, searchKeyword) {
     .filter(m => (m.targetName && m.targetName.includes(query)) || (m.displayName && m.displayName.toLowerCase().includes(query)) || (m.title && m.title.toLowerCase().includes(query)));
 
   if (matches.length === 0) {
-    await sendMessage(senderId, { text: `ℹ️ No entries found matching "${searchKeyword}".` }, true);
+    await sendMessage(senderId, { text: `ℹ️ No entries found matching "${searchKeyword}".` });
     return sendDashboard(senderId, await ensureUser(senderId));
   }
 
@@ -1315,11 +1292,10 @@ async function renderAdminPanel(senderId, userData) {
       { content_type: 'text', title: '🛡️ Review Reports', payload: 'STAFF_REPORTS' },
       { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
     ]
-  }, true);
+  });
 }
 
-async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role) {
-  const userData = await ensureUser(senderId);
+async function renderFullMessageWithoutDelay(senderId, msgId, data, quotaInfo, role) {
   const ratingDisp = formatRatingDisplay(data.ratingSum, data.ratingCount);
   const quotaNote = `\n\n🪙 (10 Points deducted for reading)`;
   const text = `📖 TO: ${data.displayName}\n🏷️ TITLE: ${data.title}\n👤 USER: ${data.authorCode || '#SYS999'}\n⭐ RATING: ${ratingDisp}\n\n"${data.body}"${quotaNote}`;
@@ -1338,7 +1314,7 @@ async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role
     ]
   };
 
-  return sendMessage(senderId, payload, true);
+  return sendMessage(senderId, payload);
 }
 
 async function sendDashboard(senderId, userData) {
@@ -1374,7 +1350,7 @@ async function sendDashboard(senderId, userData) {
   text += `--------------------`;
 
   const quickReplies = getDynamicQuickReplies('DASHBOARD', userData.role);
-  return sendMessage(senderId, { text, quick_replies: quickReplies }, true);
+  return sendMessage(senderId, { text, quick_replies: quickReplies });
 }
 
 async function sendNextReport(senderId, userData) {
@@ -1384,7 +1360,7 @@ async function sendNextReport(senderId, userData) {
     .filter(m => m.reportCount && m.reportCount > 0);
 
   if (reportedMsgs.length === 0) {
-    await sendMessage(senderId, { text: '🛡️ No pending reported messages to review.' }, true);
+    await sendMessage(senderId, { text: '🛡️ No pending reported messages to review.' });
     return renderAdminPanel(senderId, userData);
   }
 
@@ -1398,7 +1374,7 @@ async function sendNextReport(senderId, userData) {
       { content_type: 'text', title: '✅ Keep Message', payload: `KEEP_MSG_${current.id}` },
       { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
     ]
-  }, true);
+  });
 }
 
 const PORT = process.env.PORT || 3000;

@@ -488,7 +488,7 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
     return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v3.1)\n\n• All delays completely removed for instant delivery.\n• Added post-rating quick responses and pagination.`,
+      text: `📜 PLATFORM CHANGELOG (v3.2)\n\n• Filtered trending to top 5 with 100+ ratings (fallback to highest 5 if none).\n• Fixed Promote Pages flow.`,
       quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
     });
   }
@@ -502,6 +502,100 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'VIEW_STATS') {
     if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
     return renderAdminPanel(senderId, userData);
+  }
+
+  // --- FIXED: PROMOTE PAGES (SUB-ANNOUNCEMENT TIER SELECTION) ---
+  if (input === 'PROMOTED_ANNOUNCE_MENU' || lowerInput === '📣 promote post') {
+    clearUserState(senderId);
+    const tierReplies = ANNOUNCEMENT_TIERS.map(t => ({
+      content_type: 'text',
+      title: t.title,
+      payload: `BUY_TIER_${t.id}`
+    }));
+    tierReplies.push({ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' });
+
+    return sendMessage(senderId, {
+      text: `📣 SUB-ANNOUNCEMENT PROMOTION\n\nPromote your text announcement directly on the Dashboard menu!\n\nSelect a package below:`,
+      quick_replies: tierReplies
+    });
+  }
+
+  if (input.startsWith('BUY_TIER_')) {
+    const tierId = input.replace('BUY_TIER_', '');
+    const tier = ANNOUNCEMENT_TIERS.find(t => t.id === tierId);
+
+    if (!tier) return sendDashboard(senderId, userData);
+
+    if ((userData.rCoins || 0) < tier.points) {
+      return sendMessage(senderId, {
+        text: `🛑 INSUFFICIENT POINTS!\n\nYou need ${tier.points} Points for this package, but you currently have ${userData.rCoins || 0} Points.`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+      });
+    }
+
+    setUserState(senderId, { step: 'WAITING_SUB_ANNOUNCE_TEXT', tier });
+    return sendMessage(senderId, {
+      text: `📣 Selected Package: ${tier.title}\nPoints Deducted upon submission: ${tier.points} Points\n\nReply below with your announcement text (Max 150 characters):`,
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    });
+  }
+
+  if (currentState?.step === 'WAITING_SUB_ANNOUNCE_TEXT') {
+    const tier = currentState.tier;
+    if (!tier) {
+      clearUserState(senderId);
+      return sendMessage(senderId, { text: '⚠️ Session expired. Please select your package again.', quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) });
+    }
+
+    if (containsBadWords(input)) {
+      return sendMessage(senderId, {
+        text: '⚠️ Inappropriate language detected! Please use clean language for announcements:',
+        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+      });
+    }
+
+    clearUserState(senderId);
+
+    const newCoins = (userData.rCoins || 0) - tier.points;
+    await firebaseFetch(`users/${senderId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rCoins: newCoins })
+    });
+
+    const newSubAnn = {
+      senderId,
+      text: input,
+      points: tier.points,
+      days: tier.days,
+      status: 'PENDING_APPROVAL',
+      createdAt: Date.now()
+    };
+
+    const resObj = await firebaseFetch('sub_announcements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSubAnn)
+    });
+
+    const subAnnId = resObj?.name || '';
+    const allUsers = await firebaseFetch('users') || {};
+    const staffIds = Object.entries(allUsers).filter(([_, u]) => u.role === 'admin' || u.role === 'moderator').map(([id, _]) => id);
+
+    for (const staffId of staffIds) {
+      await sendMessage(staffId, {
+        text: `🔔 NEW SUB-ANNOUNCEMENT APPROVAL REQUEST!\n\nUser ID: ${senderId}\nPoints Paid: ${tier.points}\nDuration: ${tier.days} Day(s)\nText: "${input}"\n\nPlease review in Staff Panel.`,
+        quick_replies: [
+          { content_type: 'text', title: '✅ Approve', payload: `APPROVE_SUBANN_${subAnnId}` },
+          { content_type: 'text', title: '❌ Reject & Refund', payload: `REJECT_SUBANN_START_${subAnnId}` }
+        ]
+      });
+    }
+
+    return sendMessage(senderId, {
+      text: `⌛ SUB-ANNOUNCEMENT SUBMITTED FOR REVIEW!\n\nDeducted: ${tier.points} Points (Balance: ${newCoins} Points)\n\nOur staff team will review your announcement!`,
+      quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+    });
   }
 
   if (input === 'ADMIN_BROADCAST_START') {
@@ -718,7 +812,7 @@ async function handleCommand(senderId, rawInput) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isVIP: true, vipLevel: 1 })
       });
-      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 1!\n\nEnjoy your 100 Points daily check-in rewards.`, quick_replies: getDynamicQuickReplies('DASHBOARD') });
+      await sendMessage(targetUser.senderId || targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 1!\n\nEnjoy your 100 Points daily check-in rewards.`, quick_replies: getDynamicQuickReplies('DASHBOARD') });
       return sendMessage(senderId, { text: `✅ Approved VIP Level 1 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] });
     }
   }
@@ -972,7 +1066,7 @@ async function handleCommand(senderId, rawInput) {
     return renderFullMessageWithoutDelay(senderId, msgId, randomMsg, quota, userData.role);
   }
 
-  // --- TRENDING PAGES ---
+  // --- TRENDING PAGES (Top 5 with 100+ ratings, or fallback to highest 5) ---
   if (lowerInput === '/trending' || lowerInput === '🔥 trending pages' || input === 'TRENDING_PAGE_1') {
     clearUserState(senderId);
     return renderTrendingPages(senderId, 0);
@@ -1062,7 +1156,7 @@ async function handleCommand(senderId, rawInput) {
     return renderFullMessageWithoutDelay(senderId, msgId, data, quota, userData.role);
   }
 
-  // --- RATING CONFIRMATION WITH NEW QUICK RESPONSES ---
+  // --- RATING CONFIRMATION (REMOVED READ AGAIN, KEPT RANDOM/TRENDING/DASHBOARD) ---
   if (input.startsWith('RATE_')) {
     const parts = input.split('_');
     const msgId = parts[1];
@@ -1097,7 +1191,6 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `⭐ Thank you! You rated this message ${score}/5.\n\n🎉 +5 Points refunded!`,
       quick_replies: [
-        { content_type: 'text', title: '📜 Read Again', payload: `READ_${msgId}` },
         { content_type: 'text', title: '📜 Random Page', payload: '/random' },
         { content_type: 'text', title: '🔥 Trending Pages', payload: '/trending' },
         { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
@@ -1240,18 +1333,29 @@ async function renderSearchResults(senderId, allMatches, pageIndex, searchTitle)
   return sendMessage(senderId, { text, quick_replies: quickReplies });
 }
 
+// --- TRENDING PAGES (Top 5 with 100+ ratings, fallback to highest 5 if none) ---
 async function renderTrendingPages(senderId, pageIndex) {
   const allMessages = await firebaseFetch('messages') || {};
-  const sorted = Object.entries(allMessages)
-    .map(([id, val]) => ({ id, ...val }))
-    .filter(m => m.ratingCount && m.ratingCount > 0)
-    .sort((a, b) => (b.ratingSum / b.ratingCount) - (a.ratingSum / a.ratingCount));
+  const allEntries = Object.entries(allMessages).map(([id, val]) => ({ id, ...val }));
 
-  if (sorted.length === 0) {
+  // Filter messages with 100+ ratings
+  let trendingFiltered = allEntries.filter(m => m.ratingCount && m.ratingCount >= 100);
+
+  // Fallback: If none have 100+ ratings, show maximum of 5 highest rated overall
+  if (trendingFiltered.length === 0) {
+    trendingFiltered = allEntries
+      .filter(m => m.ratingCount && m.ratingCount > 0)
+      .sort((a, b) => (b.ratingSum / b.ratingCount) - (a.ratingSum / a.ratingCount))
+      .slice(0, 5);
+  } else {
+    trendingFiltered.sort((a, b) => (b.ratingSum / b.ratingCount) - (a.ratingSum / a.ratingCount));
+  }
+
+  if (trendingFiltered.length === 0) {
     return sendMessage(senderId, { text: 'ℹ️ No rated messages yet.', quick_replies: getDynamicQuickReplies('DASHBOARD') });
   }
 
-  return renderSearchResults(senderId, sorted, pageIndex, '🔥 TRENDING PAGES');
+  return renderSearchResults(senderId, trendingFiltered, pageIndex, '🔥 TRENDING PAGES (TOP 5)');
 }
 
 async function executeSearch(senderId, searchKeyword) {
@@ -1309,7 +1413,7 @@ async function renderFullMessageWithoutDelay(senderId, msgId, data, quotaInfo, r
       { content_type: 'text', title: '⭐ 4', payload: `RATE_${msgId}_4` },
       { content_type: 'text', title: '⭐ 5', payload: `RATE_${msgId}_5` },
       { content_type: 'text', title: '🚩 Report', payload: `REPORT_START_${msgId}` },
-      { content_type: 'text', title: '📜 Read Another', payload: '/random' },
+      { content_type: 'text', title: '📜 Random Page', payload: '/random' },
       { content_type: 'text', title: '📊 Dashboard', payload: 'USER_DASHBOARD' }
     ]
   };

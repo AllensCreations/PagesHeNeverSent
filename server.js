@@ -180,8 +180,14 @@ async function sendSenderAction(recipientId, action = 'typing_on') {
   }
 }
 
-async function sendMessage(recipientId, payload) {
+async function sendMessage(recipientId, payload, useTypingDelay = false) {
   if (!PAGE_ACCESS_TOKEN) return;
+  
+  if (useTypingDelay) {
+    await sendSenderAction(recipientId, 'typing_on');
+    await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds typing indicator
+  }
+  
   await sendSenderAction(recipientId, 'typing_off');
   try {
     const res = await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
@@ -464,11 +470,15 @@ async function handleCommand(senderId, rawInput) {
     input = input.replace('@Meta AI', '').trim();
   }
 
+  if (input === '👍🏻' || input === '👍') {
+    const userData = await ensureUser(senderId);
+    return sendDashboard(senderId, userData);
+  }
+
   const lowerInput = input.toLowerCase();
   const currentState = getUserState(senderId);
   const userData = await ensureUser(senderId);
 
-  // --- 1. GATEKEEPING GUARD (TERMS & CONDITIONS) ---
   if (!userData.acceptedTC) {
     if (input === 'ACCEPT_TC') {
       await firebaseFetch(`users/${senderId}`, {
@@ -485,31 +495,496 @@ async function handleCommand(senderId, rawInput) {
       quick_replies: [
         { content_type: 'text', title: '✅ I Agree & Enter', payload: 'ACCEPT_TC' }
       ]
-    });
+    }, true);
   }
 
-  // --- 2. GLOBAL OVERRIDES & ABORT CONTROLS ---
   if (input === 'CANCEL_ACTION' || lowerInput === '❌ cancel' || lowerInput === 'cancel') {
     clearUserState(senderId);
     return sendDashboard(senderId, userData);
   }
 
-  if (input === 'GET_STARTED' || lowerInput === 'get started' || lowerInput === 'hi' || lowerInput === 'hello' || lowerInput === 'menu' || input === 'USER_DASHBOARD' || lowerInput === '📊 my dashboard') {
+  if (input === 'GET_STARTED' || lowerInput === 'get started' || lowerInput === 'hi' || lowerInput === 'hello' || lowerInput === 'menu') {
     clearUserState(senderId);
     return sendDashboard(senderId, userData);
   }
 
-  if (input === '👍🏻' || input === '👍') {
+  if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
-    return sendDashboard(senderId, userData);
+    return sendMessage(senderId, {
+      text: `📜 PLATFORM CHANGELOG (v3.0)\n\n• Added 3-sec typing indicator for user messages.\n• Added quick response options after rating messages (Read Again, etc.).`,
+      quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
+    }, true);
   }
 
-  // --- 3. PRIMARY PRIORITIZED NAVIGATION ACTIONS ---
+  if (input === 'ADMIN_PANEL' || lowerInput === '📢 staff panel') {
+    clearUserState(senderId);
+    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
+    return renderAdminPanel(senderId, userData);
+  }
+
+  if (input === 'VIEW_STATS') {
+    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
+    return renderAdminPanel(senderId, userData);
+  }
+
+  if (input === 'ADMIN_BROADCAST_START') {
+    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
+    setUserState(senderId, { step: 'WAITING_BROADCAST_SEGMENT' });
+    return sendMessage(senderId, {
+      text: `📢 BROADCAST SEGMENTATION\n\nWho would you like to send this announcement to?`,
+      quick_replies: [
+        { content_type: 'text', title: '👥 All Users', payload: 'BC_TARGET_ALL' },
+        { content_type: 'text', title: '🌟 VIP Members Only', payload: 'BC_TARGET_VIP' },
+        { content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }
+      ]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_BROADCAST_SEGMENT') {
+    let targetSegment = 'ALL';
+    if (input === 'BC_TARGET_VIP') targetSegment = 'VIP';
+    setUserState(senderId, { step: 'WAITING_BROADCAST_MSG', targetSegment });
+    return sendMessage(senderId, {
+      text: `📢 Enter the announcement text for [ ${targetSegment} ] users:`,
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_BROADCAST_MSG') {
+    const targetSegment = currentState.targetSegment || 'ALL';
+    clearUserState(senderId);
+
+    const allUsers = await firebaseFetch('users') || {};
+    for (const [uId, uData] of Object.entries(allUsers)) {
+      if (targetSegment === 'VIP' && !uData.isVIP) continue;
+      await sendMessage(uId, { text: `📢 ANNOUNCEMENT (${targetSegment})\n\n"${input}"\n\n— Pages He Never Sent` }, true);
+    }
+
+    return sendMessage(senderId, {
+      text: `✅ Broadcast successfully sent to [ ${targetSegment} ] users!`,
+      quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
+    }, true);
+  }
+
+  if (input === 'VIEW_PENDING_PAYMENTS') {
+    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
+
+    const pendingPayments = await firebaseFetch('pending_payments') || {};
+    const entries = Object.entries(pendingPayments);
+
+    if (entries.length === 0) {
+      await sendMessage(senderId, { text: `💳 PENDING PAYMENTS\n\nThere are currently no pending GCash payments to review.` }, true);
+      return renderAdminPanel(senderId, userData);
+    }
+
+    const [payKey, currentPay] = entries[0];
+    return sendMessage(senderId, {
+      text: `💳 PENDING PAYMENT REVIEW (1 of ${entries.length})\n\nUser ID: ${currentPay.senderId}\nPayment Code: ${currentPay.payRef}\nGCash Ref #: ${currentPay.gcashRef}\nSubmitted: ${new Date(currentPay.timestamp).toLocaleString()}\n\nSelect an action below:`,
+      quick_replies: [
+        { content_type: 'text', title: '✅ Accept 500 Pts + VIP', payload: `ACCEPT_BUY_${currentPay.senderId}_500_${payKey}` },
+        { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${currentPay.senderId}_${payKey}` },
+        { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
+      ]
+    }, true);
+  }
+
+  if (input === 'REVIEW_SUB_ANNOUNCEMENTS') {
+    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
+
+    const subAnnObj = await firebaseFetch('sub_announcements') || {};
+    const pendingList = Object.entries(subAnnObj)
+      .map(([id, val]) => ({ id, ...val }))
+      .filter(a => a.status === 'PENDING_APPROVAL');
+
+    if (pendingList.length === 0) {
+      await sendMessage(senderId, { text: '🛡️ No pending SubAnnouncements to review.' }, true);
+      return renderAdminPanel(senderId, userData);
+    }
+
+    const current = pendingList[0];
+    return sendMessage(senderId, {
+      text: `📣 PENDING SUB-ANNOUNCEMENT (1 of ${pendingList.length})\n\nSubAnn ID: ${current.id}\nUser ID: ${current.senderId}\nPoints Paid: ${current.points} (${current.days} Days)\nText: "${current.text}"\n\nSelect action below:`,
+      quick_replies: [
+        { content_type: 'text', title: '✅ Approve', payload: `APPROVE_SUBANN_${current.id}` },
+        { content_type: 'text', title: '❌ Reject & Refund', payload: `REJECT_SUBANN_START_${current.id}` },
+        { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
+      ]
+    }, true);
+  }
+
+  if (input === 'STAFF_REPORTS' || lowerInput === '/reports') {
+    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
+    return sendNextReport(senderId, userData);
+  }
+
+  if (lowerInput.startsWith('/admin 159266 viplock')) {
+    clearUserState(senderId);
+    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
+    const settings = await firebaseFetch('settings') || {};
+    const newLockState = !settings.vipLocked;
+    await firebaseFetch('settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vipLocked: newLockState })
+    });
+    return sendMessage(senderId, {
+      text: `🔒 VIP PURCHASING STATUS UPDATED\n\nVIP Lock is now: ${newLockState ? 'LOCKED' : 'UNLOCKED'}`,
+      quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
+    }, true);
+  }
+
+  if (input === 'VIP_UPGRADE_MENU' || lowerInput === '🌟 upgrade to vip' || lowerInput === 'buy vip') {
+    clearUserState(senderId);
+    const settings = await firebaseFetch('settings') || {};
+    if (settings.vipLocked) {
+      return sendMessage(senderId, {
+        text: `🔒 VIP PURCHASING TEMPORARILY UNAVAILABLE`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+      }, true);
+    }
+
+    if (userData.vipLevel === 2) {
+      return sendMessage(senderId, {
+        text: `🌟 VIP STATUS ACTIVE\n\nYou already own VIP Level 1 and VIP Level 2!`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+      }, true);
+    }
+
+    if (userData.vipLevel === 1) {
+      setUserState(senderId, { step: 'WAITING_VIP_LEVEL_2_REF' });
+      return sendMessage(senderId, {
+        text: `🌟 UPGRADE TO VIP LEVEL 2 (₱49 — One-Time Payment)\n\n• Automatic Daily Rewards Claim!\n\nSend ₱49.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
+        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+      }, true);
+    }
+
+    setUserState(senderId, { step: 'WAITING_VIP_LEVEL_1_REF' });
+    return sendMessage(senderId, {
+      text: `🌟 UPGRADE TO VIP LEVEL 1 (₱99 — One-Time Payment)\n\n• VIP Perks: Earn 100 Points daily upon check-in!\n\nSend ₱99.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_VIP_LEVEL_1_REF') {
+    clearUserState(senderId);
+    const gcashRef = input.trim();
+    const payRef = 'VIP1-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+
+    const newPayment = { senderId, payRef, gcashRef, vipTier: 1, timestamp: Date.now() };
+    const payRes = await firebaseFetch('pending_payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newPayment)
+    });
+    const payKey = payRes?.name || '';
+
+    const allUsers = await firebaseFetch('users') || {};
+    const adminIds = Object.entries(allUsers).filter(([_, u]) => u.role === 'admin').map(([id, _]) => id);
+    for (const adminId of adminIds) {
+      await sendMessage(adminId, {
+        text: `🔔 NEW VIP LEVEL 1 PAYMENT!\n\nUser ID: ${senderId}\nGCash Ref #: ${gcashRef}\n\nAccept below:`,
+        quick_replies: [
+          { content_type: 'text', title: '✅ Accept VIP 1', payload: `ACCEPT_VIP1_${senderId}_${payKey}` },
+          { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${senderId}_${payKey}` }
+        ]
+      }, true);
+    }
+
+    return sendMessage(senderId, {
+      text: `⌛ VIP 1 PAYMENT SUBMITTED\n\nReference #: ${gcashRef}\nVerification in progress.`,
+      quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_VIP_LEVEL_2_REF') {
+    clearUserState(senderId);
+    const gcashRef = input.trim();
+    const payRef = 'VIP2-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+
+    const newPayment = { senderId, payRef, gcashRef, vipTier: 2, timestamp: Date.now() };
+    const payRes = await firebaseFetch('pending_payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newPayment)
+    });
+    const payKey = payRes?.name || '';
+
+    const allUsers = await firebaseFetch('users') || {};
+    const adminIds = Object.entries(allUsers).filter(([_, u]) => u.role === 'admin').map(([id, _]) => id);
+    for (const adminId of adminIds) {
+      await sendMessage(adminId, {
+        text: `🔔 NEW VIP LEVEL 2 PAYMENT!\n\nUser ID: ${senderId}\nGCash Ref #: ${gcashRef}\n\nAccept below:`,
+        quick_replies: [
+          { content_type: 'text', title: '✅ Accept VIP 2', payload: `ACCEPT_VIP2_${senderId}_${payKey}` },
+          { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${senderId}_${payKey}` }
+        ]
+      }, true);
+    }
+
+    return sendMessage(senderId, {
+      text: `⌛ VIP 2 PAYMENT SUBMITTED\n\nReference #: ${gcashRef}\nVerification in progress.`,
+      quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+    }, true);
+  }
+
+  if (input.startsWith('ACCEPT_VIP1_')) {
+    if (userData.role !== 'admin') return;
+    const parts = input.split('_');
+    const targetUserId = parts[2];
+    const payKey = parts[3];
+    if (payKey) await firebaseFetch(`pending_payments/${payKey}`, { method: 'DELETE' });
+
+    const targetUser = await firebaseFetch(`users/${targetUserId}`);
+    if (targetUser) {
+      await firebaseFetch(`users/${targetUserId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isVIP: true, vipLevel: 1 })
+      });
+      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 1!\n\nEnjoy your 100 Points daily check-in rewards.`, quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
+      return sendMessage(senderId, { text: `✅ Approved VIP Level 1 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+    }
+  }
+
+  if (input.startsWith('ACCEPT_VIP2_')) {
+    if (userData.role !== 'admin') return;
+    const parts = input.split('_');
+    const targetUserId = parts[2];
+    const payKey = parts[3];
+    if (payKey) await firebaseFetch(`pending_payments/${payKey}`, { method: 'DELETE' });
+
+    const targetUser = await firebaseFetch(`users/${targetUserId}`);
+    if (targetUser) {
+      await firebaseFetch(`users/${targetUserId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vipLevel: 2 })
+      });
+      await sendMessage(targetUserId, { text: `🎉 UPGRADED TO VIP LEVEL 2!\n\nAutomatic daily reward claim enabled (200 Points/day)!`, quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
+      return sendMessage(senderId, { text: `✅ Approved VIP Level 2 for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+    }
+  }
+
+  if (input.startsWith('ACCEPT_BUY_')) {
+    if (userData.role !== 'admin') return;
+    const parts = input.split('_');
+    const targetUserId = parts[2];
+    const coinAmount = parseInt(parts[3], 10);
+    const payKey = parts[4];
+
+    if (payKey) await firebaseFetch(`pending_payments/${payKey}`, { method: 'DELETE' });
+
+    const targetUser = await firebaseFetch(`users/${targetUserId}`);
+    if (targetUser) {
+      const newCoins = (targetUser.rCoins || 0) + coinAmount;
+      await firebaseFetch(`users/${targetUserId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rCoins: newCoins, isVIP: true }) });
+      await sendMessage(targetUserId, { text: `🎉 PAYMENT VERIFIED & APPROVED!\n\nYour account has been credited with +${coinAmount} Points and upgraded to VIP Status!\nNew Balance: ${newCoins} Points.`, quick_replies: getDynamicQuickReplies('DASHBOARD', targetUser.role) }, true);
+      return sendMessage(senderId, { text: `✅ Approved ${coinAmount} Points + VIP for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+    }
+  }
+
+  if (input.startsWith('REJECT_BUY_')) {
+    if (userData.role !== 'admin') return;
+    const parts = input.split('_');
+    const targetUserId = parts[2];
+    const payKey = parts[3];
+
+    if (payKey) await firebaseFetch(`pending_payments/${payKey}`, { method: 'DELETE' });
+
+    await sendMessage(targetUserId, { text: `❌ PAYMENT UNVERIFIED\n\nYour purchase request could not be verified.`, quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
+    return sendMessage(senderId, { text: `❌ Purchase rejected for user ${targetUserId}.`, quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }] }, true);
+  }
+
+  if (input.startsWith('APPROVE_SUBANN_')) {
+    if (userData.role !== 'admin' && userData.role !== 'moderator') return;
+    const subAnnId = input.replace('APPROVE_SUBANN_', '');
+
+    const subAnn = await firebaseFetch(`sub_announcements/${subAnnId}`);
+    if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' }, true);
+
+    await firebaseFetch(`sub_announcements/${subAnnId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'APPROVED' })
+    });
+
+    const { active, queued } = await getActiveSubAnnouncements();
+    const isQueued = queued.some(q => q.id === subAnnId);
+
+    if (isQueued) {
+      const qPos = queued.findIndex(q => q.id === subAnnId) + 1;
+      await sendMessage(subAnn.senderId, {
+        text: `🎉 SUB-ANNOUNCEMENT APPROVED & QUEUED!\n\nYour announcement was approved and is in queue (Position #${qPos}).`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD')
+      }, true);
+    } else {
+      await sendMessage(subAnn.senderId, {
+        text: `🎉 SUB-ANNOUNCEMENT IS NOW LIVE!\n\nYour announcement is now live on the Dashboard for ${subAnn.days} Day(s)!`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD')
+      }, true);
+    }
+
+    return sendMessage(senderId, {
+      text: `✅ Approved SubAnnouncement ${subAnnId}.`,
+      quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
+    }, true);
+  }
+
+  if (input.startsWith('REJECT_SUBANN_START_')) {
+    if (userData.role !== 'admin' && userData.role !== 'moderator') return;
+    const subAnnId = input.replace('REJECT_SUBANN_START_', '');
+    setUserState(senderId, { step: 'WAITING_REJECT_REASON', subAnnId });
+
+    return sendMessage(senderId, {
+      text: `❌ REJECTING SUB-ANNOUNCEMENT (${subAnnId})\n\nReply below with the reason for rejection:`,
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_REJECT_REASON') {
+    const subAnnId = currentState.subAnnId;
+    clearUserState(senderId);
+
+    const subAnn = await firebaseFetch(`sub_announcements/${subAnnId}`);
+    if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' }, true);
+
+    await firebaseFetch(`sub_announcements/${subAnnId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'REJECTED', rejectReason: input })
+    });
+
+    const targetUser = await firebaseFetch(`users/${subAnn.senderId}`);
+    if (targetUser) {
+      const refundedCoins = (targetUser.rCoins || 0) + subAnn.points;
+      await firebaseFetch(`users/${subAnn.senderId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rCoins: refundedCoins })
+      });
+
+      await sendMessage(subAnn.senderId, {
+        text: `❌ SUB-ANNOUNCEMENT REJECTED & REFUNDED\n\nReason: "${input}"\n\n🎉 Full Refund Credited: +${subAnn.points} Points`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD', targetUser.role)
+      }, true);
+    }
+
+    return sendMessage(senderId, {
+      text: `❌ Rejected & refunded SubAnnouncement ${subAnnId}.`,
+      quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
+    }, true);
+  }
+
+  // --- LEAVE MESSAGE (With 3-sec typing indicator) ---
+  if (lowerInput.startsWith('/message') || lowerInput === '💬 leave message') {
+    if ((userData.messagesToday || 0) >= 2) {
+      return sendMessage(senderId, {
+        text: `⚠️ DAILY MESSAGE LIMIT REACHED!\n\nYou can only leave up to 2 messages per day.`,
+        quick_replies: getDynamicQuickReplies('LEAVE', userData.role)
+      }, true);
+    }
+
+    const targetName = input.startsWith('/message') ? input.substring(8).trim() : '';
+    if (!targetName) {
+      setUserState(senderId, { step: 'WAITING_TARGET_NAME' });
+      return sendMessage(senderId, {
+        text: '✉️ Type the Full Name of the person this message is for:',
+        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+      }, true);
+    }
+    setUserState(senderId, { step: 'WAITING_TITLE', targetName });
+    return sendMessage(senderId, {
+      text: `Creating a message for "${targetName}".\n\nReply with a Title:`,
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_TARGET_NAME') {
+    if (containsBadWords(input)) {
+      return sendMessage(senderId, { text: '⚠️ Inappropriate name detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+    }
+    setUserState(senderId, { step: 'WAITING_TITLE', targetName: input });
+    return sendMessage(senderId, { text: `Creating a message for "${input}".\n\nReply with a Title:`, quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+  }
+
+  if (currentState?.step === 'WAITING_TITLE') {
+    if (containsBadWords(input)) {
+      return sendMessage(senderId, { text: '⚠️ Inappropriate title detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+    }
+    setUserState(senderId, { ...currentState, title: input, step: 'WAITING_MOOD' });
+
+    const moodReplies = MOODS.map(m => ({ content_type: 'text', title: m.label, payload: `SET_${m.id}` }));
+    moodReplies.push({ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' });
+
+    return sendMessage(senderId, {
+      text: 'Title saved! Choose a Mood Category for this confession:',
+      quick_replies: moodReplies
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_MOOD' && input.startsWith('SET_MOOD_')) {
+    const chosenMood = input.replace('SET_', '');
+    setUserState(senderId, { ...currentState, mood: chosenMood, step: 'WAITING_BODY' });
+    return sendMessage(senderId, {
+      text: 'Mood set! Now type your complete message below:',
+      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_BODY') {
+    if (!currentState.targetName || !currentState.title) {
+      clearUserState(senderId);
+      return sendMessage(senderId, { text: '⚠️ Session expired.', quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) }, true);
+    }
+
+    if (containsBadWords(input) || isSpamOrGibberish(input)) {
+      return sendMessage(senderId, {
+        text: '⚠️ Message rejected! Please write a genuine letter (>25 characters):',
+        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+      }, true);
+    }
+
+    const { targetName, title, mood } = currentState;
+    clearUserState(senderId);
+
+    await firebaseFetch('messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetName: targetName.toLowerCase(),
+        displayName: targetName,
+        title,
+        mood: mood || 'MOOD_HEARTBREAK',
+        body: input,
+        author: 'Anonymous',
+        authorCode: userData.userCode,
+        ratingSum: 0,
+        ratingCount: 0,
+        reportCount: 0,
+        createdAt: Date.now()
+      })
+    });
+
+    const newMessagesToday = (userData.messagesToday || 0) + 1;
+    const newTotal = (userData.rCoins || 0) + 5;
+    await firebaseFetch(`users/${senderId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rCoins: newTotal, messagesToday: newMessagesToday })
+    });
+
+    return sendMessage(senderId, {
+      text: `🕊️ Your unsent letter for "${targetName}" has been safely archived!\n\n🎉 You earned +5 Points for writing!`,
+      quick_replies: getDynamicQuickReplies('LEAVE', userData.role)
+    }, true);
+  }
+
+  // --- RANDOM PAGE ---
   if (lowerInput === '/random' || lowerInput === '📜 random page') {
     clearUserState(senderId);
     const quota = await checkReadingQuota(senderId, userData);
     if (!quota.allowed) {
-      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('RANDOM', userData.role) });
+      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('RANDOM', userData.role) }, true);
     }
 
     const allMessages = await firebaseFetch('messages') || {};
@@ -520,16 +995,7 @@ async function handleCommand(senderId, rawInput) {
     return renderFullMessageWithDelay(senderId, msgId, randomMsg, quota, userData.role);
   }
 
-  if (lowerInput.startsWith('/search') || lowerInput === '🔍 search name') {
-    clearUserState(senderId);
-    const targetName = input.startsWith('/search') ? input.substring(7).trim().toLowerCase() : '';
-    if (!targetName) {
-      setUserState(senderId, { step: 'WAITING_SEARCH_NAME' });
-      return sendMessage(senderId, { text: '🔍 Type the Full Name or part of the name of the recipient you wish to search for:', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
-    }
-    return executeSearch(senderId, targetName);
-  }
-
+  // --- TRENDING PAGES ---
   if (lowerInput === '/trending' || lowerInput === '🔥 trending pages' || input === 'TRENDING_PAGE_1') {
     clearUserState(senderId);
     return renderTrendingPages(senderId, 0);
@@ -541,7 +1007,160 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `📅 SEARCH BY OCCASION (MM/DD)\n\nEnter a date to find birthday, anniversary, or special occasion messages (Example: 08/09):`,
       quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
+    }, true);
+  }
+
+  if (currentState?.step === 'WAITING_OCCASION_DATE') {
+    clearUserState(senderId);
+    const dateQuery = input.trim();
+    const allMessages = await firebaseFetch('messages') || {};
+
+    const matches = Object.entries(allMessages)
+      .map(([id, val]) => ({ id, ...val }))
+      .filter(m => m.title && m.title.includes(dateQuery) || (m.body && m.body.includes(dateQuery)));
+
+    if (matches.length === 0) {
+      return sendMessage(senderId, {
+        text: `ℹ️ No occasion messages found matching date "${dateQuery}".`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+      }, true);
+    }
+
+    return renderSearchResults(senderId, matches, 0, `📅 OCCASION (${dateQuery})`);
+  }
+
+  if (lowerInput.startsWith('/search') || lowerInput === '🔍 search name') {
+    const targetName = input.startsWith('/search') ? input.substring(7).trim().toLowerCase() : '';
+    if (!targetName) {
+      setUserState(senderId, { step: 'WAITING_SEARCH_NAME' });
+      return sendMessage(senderId, { text: '🔍 Type the Full Name or part of the name of the recipient you wish to search for:', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] }, true);
+    }
+    clearUserState(senderId);
+    return executeSearch(senderId, targetName);
+  }
+
+  if (currentState?.step === 'WAITING_SEARCH_NAME') {
+    clearUserState(senderId);
+    return executeSearch(senderId, lowerInput);
+  }
+
+  if (currentState?.step === 'VIEWING_SEARCH_RESULTS') {
+    if (input === 'NEXT_PAGE') {
+      const nextIdx = currentState.pageIndex + 5;
+      return renderSearchResults(senderId, currentState.allMatches, nextIdx, currentState.searchTitle);
+    }
+    if (input === 'PREV_PAGE') {
+      const prevIdx = Math.max(0, currentState.pageIndex - 5);
+      return renderSearchResults(senderId, currentState.allMatches, prevIdx, currentState.searchTitle);
+    }
+
+    let selectedIndex = -1;
+    const emojiMatchIndex = EMOJI_NUMBERS.indexOf(input);
+    if (emojiMatchIndex !== -1) selectedIndex = emojiMatchIndex;
+    else if (/^[1-5]$/.test(input)) selectedIndex = parseInt(input, 10) - 1;
+
+    if (selectedIndex !== -1 && currentState.searchResults?.[selectedIndex]) {
+      const msg = currentState.searchResults[selectedIndex];
+      clearUserState(senderId);
+
+      const quota = await checkReadingQuota(senderId, userData);
+      if (!quota.allowed) {
+        return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS!`, quick_replies: getDynamicQuickReplies('SEARCH', userData.role) }, true);
+      }
+      return renderFullMessageWithDelay(senderId, msg.id, msg, quota, userData.role);
+    }
+  }
+
+  if (input.startsWith('READ_')) {
+    clearUserState(senderId);
+    const quota = await checkReadingQuota(senderId, userData);
+    if (!quota.allowed) {
+      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) }, true);
+    }
+
+    const msgId = input.replace('READ_', '');
+    const data = await firebaseFetch(`messages/${msgId}`);
+    if (!data) return sendDashboard(senderId, userData);
+
+    return renderFullMessageWithDelay(senderId, msgId, data, quota, userData.role);
+  }
+
+  // --- RATING CONFIRMATION WITH NEW QUICK RESPONSES (Read Again, etc.) ---
+  if (input.startsWith('RATE_')) {
+    const parts = input.split('_');
+    const msgId = parts[1];
+    const score = parseInt(parts[2], 10);
+
+    const ratedMap = userData.ratedMsgs || {};
+    if (ratedMap[msgId]) {
+      return sendMessage(senderId, {
+        text: `⚠️ You have already rated this message once!`,
+        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+      }, true);
+    }
+
+    ratedMap[msgId] = score;
+    const msg = await firebaseFetch(`messages/${msgId}`) || {};
+    await firebaseFetch(`messages/${msgId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ratingSum: (msg.ratingSum || 0) + score,
+        ratingCount: (msg.ratingCount || 0) + 1
+      })
     });
+
+    const newCoins = (userData.rCoins || 0) + 5;
+    await firebaseFetch(`users/${senderId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rCoins: newCoins, ratedMsgs: ratedMap })
+    });
+
+    return sendMessage(senderId, {
+      text: `⭐ Thank you! You rated this message ${score}/5.\n\n🎉 +5 Points refunded!`,
+      quick_replies: [
+        { content_type: 'text', title: '📜 Read Again', payload: `READ_${msgId}` },
+        { content_type: 'text', title: '📜 Random Page', payload: '/random' },
+        { content_type: 'text', title: '🔥 Trending Pages', payload: '/trending' },
+        { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
+      ]
+    }, true);
+  }
+
+  if (input.startsWith('REPORT_START_')) {
+    const msgId = input.replace('REPORT_START_', '');
+    const reasonReplies = REPORT_REASONS.map(r => ({
+      content_type: 'text',
+      title: r,
+      payload: `SUBMIT_REPORT_${msgId}_${r}`
+    }));
+    return sendMessage(senderId, {
+      text: `🛡️ SELECT REPORT REASON:`,
+      quick_replies: reasonReplies
+    }, true);
+  }
+
+  if (input.startsWith('SUBMIT_REPORT_')) {
+    const parts = input.split('_');
+    const msgId = parts[2];
+    const reason = parts[3];
+
+    const msg = await firebaseFetch(`messages/${msgId}`) || {};
+    const newReportCount = (msg.reportCount || 0) + 1;
+    let reporters = msg.reporters || [];
+    if (!reporters.includes(senderId)) reporters.push(senderId);
+
+    await firebaseFetch(`messages/${msgId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reportCount: newReportCount, reportReason: reason, reporters })
+    });
+
+    return sendMessage(senderId, {
+      text: `🛡️ Report submitted (${reason}). If approved, you will be rewarded +1 Point!`,
+      quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
+    }, true);
   }
 
   if (input === 'BROWSE_MOODS' || lowerInput === '🎭 browse moods') {
@@ -552,7 +1171,29 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `🎭 BROWSE BY MOOD\n\nSelect a mood category:`,
       quick_replies: quickReplies
-    });
+    }, true);
+  }
+
+  if (input.startsWith('SELECT_MOOD_') || input.startsWith('SELECT_MOOD_')) {
+    clearUserState(senderId);
+    const selectedMood = input.replace('SELECT_', '');
+    const allMessages = await firebaseFetch('messages') || {};
+
+    const matches = Object.entries(allMessages)
+      .map(([id, val]) => ({ id, ...val }))
+      .filter(m => m.mood === selectedMood);
+
+    if (matches.length === 0) {
+      return sendMessage(senderId, {
+        text: `ℹ️ No confessions found for this mood category yet.`,
+        quick_replies: [
+          { content_type: 'text', title: '🎭 Browse Moods', payload: 'BROWSE_MOODS' },
+          { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
+        ]
+      }, true);
+    }
+
+    return renderSearchResults(senderId, matches, 0, `🎭 MOOD (${selectedMood})`);
   }
 
   if (lowerInput === '/checkin' || lowerInput === '📅 daily check-in') {
@@ -564,7 +1205,7 @@ async function handleCommand(senderId, rawInput) {
       return sendMessage(senderId, {
         text: `📅 DAILY CHECK-IN\n\nStreak: ${userData.streak || 0} Day(s) (${badge})\nYou have already claimed your daily reward today!`,
         quick_replies: getDynamicQuickReplies('CHECKIN', userData.role)
-      });
+      }, true);
     }
 
     const yesterday = new Date();
@@ -588,553 +1229,9 @@ async function handleCommand(senderId, rawInput) {
     return sendMessage(senderId, {
       text: `📅 CHECK-IN SUCCESSFUL!\n\n🔥 Current Streak: ${newStreak} Day(s)\n🏅 Badge: ${badge}\n🪙 Earned: +${totalReward} Points\n💰 Total Balance: ${newCoins} Points`,
       quick_replies: getDynamicQuickReplies('CHECKIN', userData.role)
-    });
+    }, true);
   }
 
-  // --- 4. STAFF & ADMIN ACTIONS ---
-  if (input === 'ADMIN_PANEL' || lowerInput === '📢 staff panel') {
-    clearUserState(senderId);
-    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
-    return renderAdminPanel(senderId, userData);
-  }
-
-  if (input === 'VIEW_STATS') {
-    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
-    return renderAdminPanel(senderId, userData);
-  }
-
-  if (input === 'VIEW_PENDING_PAYMENTS') {
-    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
-
-    const pendingPayments = await firebaseFetch('pending_payments') || {};
-    const entries = Object.entries(pendingPayments);
-
-    if (entries.length === 0) {
-      await sendMessage(senderId, { text: `💳 PENDING PAYMENTS\n\nThere are currently no pending GCash payments to review.` });
-      return renderAdminPanel(senderId, userData);
-    }
-
-    const [payKey, currentPay] = entries[0];
-    return sendMessage(senderId, {
-      text: `💳 PENDING PAYMENT REVIEW (1 of ${entries.length})\n\nUser ID: ${currentPay.senderId}\nPayment Code: ${currentPay.payRef}\nGCash Ref #: ${currentPay.gcashRef}\nSubmitted: ${new Date(currentPay.timestamp).toLocaleString()}\n\nSelect an action below:`,
-      quick_replies: [
-        { content_type: 'text', title: '✅ Accept 500 Pts + VIP', payload: `ACCEPT_BUY_${currentPay.senderId}_500_${payKey}` },
-        { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${currentPay.senderId}_${payKey}` },
-        { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
-      ]
-    });
-  }
-
-  if (input === 'REVIEW_SUB_ANNOUNCEMENTS') {
-    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
-
-    const subAnnObj = await firebaseFetch('sub_announcements') || {};
-    const pendingList = Object.entries(subAnnObj)
-      .map(([id, val]) => ({ id, ...val }))
-      .filter(a => a.status === 'PENDING_APPROVAL');
-
-    if (pendingList.length === 0) {
-      await sendMessage(senderId, { text: '🛡️ No pending SubAnnouncements to review.' });
-      return renderAdminPanel(senderId, userData);
-    }
-
-    const current = pendingList[0];
-    return sendMessage(senderId, {
-      text: `📣 PENDING SUB-ANNOUNCEMENT (1 of ${pendingList.length})\n\nSubAnn ID: ${current.id}\nUser ID: ${current.senderId}\nPoints Paid: ${current.points} (${current.days} Days)\nText: "${current.text}"\n\nSelect action below:`,
-      quick_replies: [
-        { content_type: 'text', title: '✅ Approve', payload: `APPROVE_SUBANN_${current.id}` },
-        { content_type: 'text', title: '❌ Reject & Refund', payload: `REJECT_SUBANN_START_${current.id}` },
-        { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
-      ]
-    });
-  }
-
-  if (input === 'STAFF_REPORTS' || lowerInput === '/reports') {
-    if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
-    return sendNextReport(senderId, userData);
-  }
-
-  // --- 5. INTERACTIVE PAYLOADS & STATE MACHINE ---
-  if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
-    clearUserState(senderId);
-    return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v3.1)\n\n• Removed all typing delays except for Random Page.\n• Full redirection cleanup.`,
-      quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
-    });
-  }
-
-  if (input === 'VIP_UPGRADE_MENU' || lowerInput === '🌟 upgrade to vip' || lowerInput === 'buy vip') {
-    clearUserState(senderId);
-    const settings = await firebaseFetch('settings') || {};
-    if (settings.vipLocked) {
-      return sendMessage(senderId, {
-        text: `🔒 VIP PURCHASING TEMPORARILY UNAVAILABLE`,
-        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      });
-    }
-
-    if (userData.vipLevel === 2) {
-      return sendMessage(senderId, {
-        text: `🌟 VIP STATUS ACTIVE\n\nYou already own VIP Level 1 and VIP Level 2!`,
-        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      });
-    }
-
-    if (userData.vipLevel === 1) {
-      setUserState(senderId, { step: 'WAITING_VIP_LEVEL_2_REF' });
-      return sendMessage(senderId, {
-        text: `🌟 UPGRADE TO VIP LEVEL 2 (₱49 — One-Time Payment)\n\n• Automatic Daily Rewards Claim!\n\nSend ₱49.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
-        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      });
-    }
-
-    setUserState(senderId, { step: 'WAITING_VIP_LEVEL_1_REF' });
-    return sendMessage(senderId, {
-      text: `🌟 UPGRADE TO VIP LEVEL 1 (₱99 — One-Time Payment)\n\n• VIP Perks: Earn 100 Points daily upon check-in!\n\nSend ₱99.00 via GCash:\n📱 GCash #: 09658110032\n👤 Name: Mr. Salviejo\n\nReply below with your 13-digit GCash Reference Number:`,
-      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    });
-  }
-
-  if (input === 'ADMIN_BROADCAST_START') {
-    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
-    setUserState(senderId, { step: 'WAITING_BROADCAST_SEGMENT' });
-    return sendMessage(senderId, {
-      text: `📢 BROADCAST SEGMENTATION\n\nWho would you like to send this announcement to?`,
-      quick_replies: [
-        { content_type: 'text', title: '👥 All Users', payload: 'BC_TARGET_ALL' },
-        { content_type: 'text', title: '🌟 VIP Members Only', payload: 'BC_TARGET_VIP' },
-        { content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }
-      ]
-    });
-  }
-
-  if (lowerInput.startsWith('/message') || lowerInput === '💬 leave message') {
-    clearUserState(senderId);
-    if ((userData.messagesToday || 0) >= 2) {
-      return sendMessage(senderId, {
-        text: `⚠️ DAILY MESSAGE LIMIT REACHED!\n\nYou can only leave up to 2 messages per day.`,
-        quick_replies: getDynamicQuickReplies('LEAVE', userData.role)
-      });
-    }
-
-    const targetName = input.startsWith('/message') ? input.substring(8).trim() : '';
-    if (!targetName) {
-      setUserState(senderId, { step: 'WAITING_TARGET_NAME' });
-      return sendMessage(senderId, {
-        text: '✉️ Type the Full Name of the person this message is for:',
-        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      });
-    }
-    setUserState(senderId, { step: 'WAITING_TITLE', targetName });
-    return sendMessage(senderId, {
-      text: `Creating a message for "${targetName}".\n\nReply with a Title:`,
-      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    });
-  }
-
-  if (input.startsWith('READ_')) {
-    clearUserState(senderId);
-    const quota = await checkReadingQuota(senderId, userData);
-    if (!quota.allowed) {
-      return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS (Requires 10 Points)!`, quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) });
-    }
-
-    const msgId = input.replace('READ_', '');
-    const data = await firebaseFetch(`messages/${msgId}`);
-    if (!data) return sendDashboard(senderId, userData);
-
-    return renderFullMessageWithoutDelay(senderId, msgId, data, quota, userData.role);
-  }
-
-  if (input.startsWith('RATE_')) {
-    clearUserState(senderId);
-    const parts = input.split('_');
-    const msgId = parts[1];
-    const score = parseInt(parts[2], 10);
-
-    const ratedMap = userData.ratedMsgs || {};
-    if (ratedMap[msgId]) {
-      return sendMessage(senderId, {
-        text: `⚠️ You have already rated this message once!`,
-        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      });
-    }
-
-    ratedMap[msgId] = score;
-    const msg = await firebaseFetch(`messages/${msgId}`) || {};
-    await firebaseFetch(`messages/${msgId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ratingSum: (msg.ratingSum || 0) + score,
-        ratingCount: (msg.ratingCount || 0) + 1
-      })
-    });
-
-    const newCoins = (userData.rCoins || 0) + 5;
-    await firebaseFetch(`users/${senderId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rCoins: newCoins, ratedMsgs: ratedMap })
-    });
-
-    return sendMessage(senderId, {
-      text: `⭐ Thank you! You rated this message ${score}/5.\n\n🎉 +5 Points refunded!`,
-      quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-    });
-  }
-
-  if (input.startsWith('REPORT_START_')) {
-    clearUserState(senderId);
-    const msgId = input.replace('REPORT_START_', '');
-    const reasonReplies = REPORT_REASONS.map(r => ({
-      content_type: 'text',
-      title: r,
-      payload: `SUBMIT_REPORT_${msgId}_${r}`
-    }));
-    return sendMessage(senderId, {
-      text: `🛡️ SELECT REPORT REASON:`,
-      quick_replies: reasonReplies
-    });
-  }
-
-  if (input.startsWith('SUBMIT_REPORT_')) {
-    clearUserState(senderId);
-    const parts = input.split('_');
-    const msgId = parts[2];
-    const reason = parts[3];
-
-    const msg = await firebaseFetch(`messages/${msgId}`) || {};
-    const newReportCount = (msg.reportCount || 0) + 1;
-    let reporters = msg.reporters || [];
-    if (!reporters.includes(senderId)) reporters.push(senderId);
-
-    await firebaseFetch(`messages/${msgId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reportCount: newReportCount, reportReason: reason, reporters })
-    });
-
-    return sendMessage(senderId, {
-      text: `🛡️ Report submitted (${reason}). If approved, you will be rewarded +1 Point!`,
-      quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-    });
-  }
-
-  if (input.startsWith('SELECT_MOOD_') || input.startsWith('SELECT_')) {
-    clearUserState(senderId);
-    const selectedMood = input.replace('SELECT_', '');
-    const allMessages = await firebaseFetch('messages') || {};
-
-    const matches = Object.entries(allMessages)
-      .map(([id, val]) => ({ id, ...val }))
-      .filter(m => m.mood === selectedMood);
-
-    if (matches.length === 0) {
-      return sendMessage(senderId, {
-        text: `ℹ️ No confessions found for this mood category yet.`,
-        quick_replies: [
-          { content_type: 'text', title: '🎭 Browse Moods', payload: 'BROWSE_MOODS' },
-          { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
-        ]
-      });
-    }
-
-    return renderSearchResults(senderId, matches, 0, `🎭 MOOD (${selectedMood})`);
-  }
-
-  // --- 6. MULTI-STEP STATE MACHINE HANDLERS ---
-  if (currentState) {
-    if (currentState.step === 'WAITING_VIP_LEVEL_1_REF') {
-      clearUserState(senderId);
-      const gcashRef = input.trim();
-      const payRef = 'VIP1-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-
-      const newPayment = { senderId, payRef, gcashRef, vipTier: 1, timestamp: Date.now() };
-      const payRes = await firebaseFetch('pending_payments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newPayment)
-      });
-      const payKey = payRes?.name || '';
-
-      const allUsers = await firebaseFetch('users') || {};
-      const adminIds = Object.entries(allUsers).filter(([_, u]) => u.role === 'admin').map(([id, _]) => id);
-      for (const adminId of adminIds) {
-        await sendMessage(adminId, {
-          text: `🔔 NEW VIP LEVEL 1 PAYMENT!\n\nUser ID: ${senderId}\nGCash Ref #: ${gcashRef}\n\nAccept below:`,
-          quick_replies: [
-            { content_type: 'text', title: '✅ Accept VIP 1', payload: `ACCEPT_VIP1_${senderId}_${payKey}` },
-            { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${senderId}_${payKey}` }
-          ]
-        });
-      }
-
-      return sendMessage(senderId, {
-        text: `⌛ VIP 1 PAYMENT SUBMITTED\n\nReference #: ${gcashRef}\nVerification in progress.`,
-        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      });
-    }
-
-    if (currentState.step === 'WAITING_VIP_LEVEL_2_REF') {
-      clearUserState(senderId);
-      const gcashRef = input.trim();
-      const payRef = 'VIP2-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-
-      const newPayment = { senderId, payRef, gcashRef, vipTier: 2, timestamp: Date.now() };
-      const payRes = await firebaseFetch('pending_payments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newPayment)
-      });
-      const payKey = payRes?.name || '';
-
-      const allUsers = await firebaseFetch('users') || {};
-      const adminIds = Object.entries(allUsers).filter(([_, u]) => u.role === 'admin').map(([id, _]) => id);
-      for (const adminId of adminIds) {
-        await sendMessage(adminId, {
-          text: `🔔 NEW VIP LEVEL 2 PAYMENT!\n\nUser ID: ${senderId}\nGCash Ref #: ${gcashRef}\n\nAccept below:`,
-          quick_replies: [
-            { content_type: 'text', title: '✅ Accept VIP 2', payload: `ACCEPT_VIP2_${senderId}_${payKey}` },
-            { content_type: 'text', title: '❌ Reject', payload: `REJECT_BUY_${senderId}_${payKey}` }
-          ]
-        });
-      }
-
-      return sendMessage(senderId, {
-        text: `⌛ VIP 2 PAYMENT SUBMITTED\n\nReference #: ${gcashRef}\nVerification in progress.`,
-        quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-      });
-    }
-
-    if (currentState.step === 'WAITING_BROADCAST_SEGMENT') {
-      let targetSegment = 'ALL';
-      if (input === 'BC_TARGET_VIP') targetSegment = 'VIP';
-      setUserState(senderId, { step: 'WAITING_BROADCAST_MSG', targetSegment });
-      return sendMessage(senderId, {
-        text: `📢 Enter the announcement text for [ ${targetSegment} ] users:`,
-        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      });
-    }
-
-    if (currentState.step === 'WAITING_BROADCAST_MSG') {
-      const targetSegment = currentState.targetSegment || 'ALL';
-      clearUserState(senderId);
-
-      const allUsers = await firebaseFetch('users') || {};
-      for (const [uId, uData] of Object.entries(allUsers)) {
-        if (targetSegment === 'VIP' && !uData.isVIP) continue;
-        await sendMessage(uId, { text: `📢 ANNOUNCEMENT (${targetSegment})\n\n"${input}"\n\n— Pages He Never Sent` });
-      }
-
-      return sendMessage(senderId, {
-        text: `✅ Broadcast successfully sent to [ ${targetSegment} ] users!`,
-        quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-      });
-    }
-
-    if (currentState.step === 'WAITING_REJECT_REASON') {
-      const subAnnId = currentState.subAnnId;
-      clearUserState(senderId);
-
-      const subAnn = await firebaseFetch(`sub_announcements/${subAnnId}`);
-      if (!subAnn) return sendMessage(senderId, { text: '❌ Announcement not found.' });
-
-      await firebaseFetch(`sub_announcements/${subAnnId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'REJECTED', rejectReason: input })
-      });
-
-      const targetUser = await firebaseFetch(`users/${subAnn.senderId}`);
-      if (targetUser) {
-        const refundedCoins = (targetUser.rCoins || 0) + subAnn.points;
-        await firebaseFetch(`users/${subAnn.senderId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rCoins: refundedCoins })
-        });
-
-        await sendMessage(subAnn.senderId, {
-          text: `❌ SUB-ANNOUNCEMENT REJECTED & REFUNDED\n\nReason: "${input}"\n\n🎉 Full Refund Credited: +${subAnn.points} Points`,
-          quick_replies: getDynamicQuickReplies('DASHBOARD', targetUser.role)
-        });
-      }
-
-      return sendMessage(senderId, {
-        text: `❌ Rejected & refunded SubAnnouncement ${subAnnId}.`,
-        quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-      });
-    }
-
-    if (currentState.step === 'WAITING_TARGET_NAME') {
-      if (containsBadWords(input)) {
-        return sendMessage(senderId, { text: '⚠️ Inappropriate name detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
-      }
-      setUserState(senderId, { step: 'WAITING_TITLE', targetName: input });
-      return sendMessage(senderId, { text: `Creating a message for "${input}".\n\nReply with a Title:`, quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
-    }
-
-    if (currentState.step === 'WAITING_TITLE') {
-      if (containsBadWords(input)) {
-        return sendMessage(senderId, { text: '⚠️ Inappropriate title detected.', quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }] });
-      }
-      setUserState(senderId, { ...currentState, title: input, step: 'WAITING_MOOD' });
-
-      const moodReplies = MOODS.map(m => ({ content_type: 'text', title: m.label, payload: `SET_${m.id}` }));
-      moodReplies.push({ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' });
-
-      return sendMessage(senderId, {
-        text: 'Title saved! Choose a Mood Category for this confession:',
-        quick_replies: moodReplies
-      });
-    }
-
-    if (currentState.step === 'WAITING_MOOD' && input.startsWith('SET_')) {
-      const chosenMood = input.replace('SET_', '');
-      setUserState(senderId, { ...currentState, mood: chosenMood, step: 'WAITING_BODY' });
-      return sendMessage(senderId, {
-        text: 'Mood set! Now type your complete message below:',
-        quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-      });
-    }
-
-    if (currentState.step === 'WAITING_BODY') {
-      if (!currentState.targetName || !currentState.title) {
-        clearUserState(senderId);
-        return sendMessage(senderId, { text: '⚠️ Session expired.', quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role) });
-      }
-
-      if (containsBadWords(input) || isSpamOrGibberish(input)) {
-        return sendMessage(senderId, {
-          text: '⚠️ Message rejected! Please write a genuine letter (>25 characters):',
-          quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-        });
-      }
-
-      const { targetName, title, mood } = currentState;
-      clearUserState(senderId);
-
-      await firebaseFetch('messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetName: targetName.toLowerCase(),
-          displayName: targetName,
-          title,
-          mood: mood || 'MOOD_HEARTBREAK',
-          body: input,
-          author: 'Anonymous',
-          authorCode: userData.userCode,
-          ratingSum: 0,
-          ratingCount: 0,
-          reportCount: 0,
-          createdAt: Date.now()
-        })
-      });
-
-      const newMessagesToday = (userData.messagesToday || 0) + 1;
-      const newTotal = (userData.rCoins || 0) + 5;
-      await firebaseFetch(`users/${senderId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rCoins: newTotal, messagesToday: newMessagesToday })
-      });
-
-      return sendMessage(senderId, {
-        text: `🕊️ Your unsent letter for "${targetName}" has been safely archived!\n\n🎉 You earned +5 Points for writing!`,
-        quick_replies: getDynamicQuickReplies('LEAVE', userData.role)
-      });
-    }
-
-    if (currentState.step === 'WAITING_OCCASION_DATE') {
-      clearUserState(senderId);
-      const dateQuery = input.trim();
-      const allMessages = await firebaseFetch('messages') || {};
-
-      const matches = Object.entries(allMessages)
-        .map(([id, val]) => ({ id, ...val }))
-        .filter(m => m.title && m.title.includes(dateQuery) || (m.body && m.body.includes(dateQuery)));
-
-      if (matches.length === 0) {
-        return sendMessage(senderId, {
-          text: `ℹ️ No occasion messages found matching date "${dateQuery}".`,
-          quick_replies: getDynamicQuickReplies('DASHBOARD', userData.role)
-        });
-      }
-
-      return renderSearchResults(senderId, matches, 0, `📅 OCCASION (${dateQuery})`);
-    }
-
-    if (currentState.step === 'WAITING_SEARCH_NAME') {
-      clearUserState(senderId);
-      return executeSearch(senderId, lowerInput);
-    }
-
-    if (currentState.step === 'VIEWING_SEARCH_RESULTS') {
-      if (input === 'NEXT_PAGE') {
-        const nextIdx = currentState.pageIndex + 5;
-        return renderSearchResults(senderId, currentState.allMatches, nextIdx, currentState.searchTitle);
-      }
-      if (input === 'PREV_PAGE') {
-        const prevIdx = Math.max(0, currentState.pageIndex - 5);
-        return renderSearchResults(senderId, currentState.allMatches, prevIdx, currentState.searchTitle);
-      }
-
-      let selectedIndex = -1;
-      const emojiMatchIndex = EMOJI_NUMBERS.indexOf(input);
-      if (emojiMatchIndex !== -1) selectedIndex = emojiMatchIndex;
-      else if (/^[1-5]$/.test(input)) selectedIndex = parseInt(input, 10) - 1;
-
-      if (selectedIndex !== -1 && currentState.searchResults?.[selectedIndex]) {
-        const msg = currentState.searchResults[selectedIndex];
-        clearUserState(senderId);
-
-        const quota = await checkReadingQuota(senderId, userData);
-        if (!quota.allowed) {
-          return sendMessage(senderId, { text: `🛑 INSUFFICIENT POINTS!`, quick_replies: getDynamicQuickReplies('SEARCH', userData.role) });
-        }
-        return renderFullMessageWithoutDelay(senderId, msg.id, msg, quota, userData.role);
-      }
-    }
-  }
-
-  // --- 7. ADMIN ACTION PAYLOADS ---
-  if (input.startsWith('ACCEPT_VIP1_') || input.startsWith('ACCEPT_VIP2_') || input.startsWith('ACCEPT_BUY_') || input.startsWith('REJECT_BUY_') || input.startsWith('APPROVE_SUBANN_') || input.startsWith('REJECT_SUBANN_START_') || input.startsWith('DEL_MSG_') || input.startsWith('KEEP_MSG_')) {
-    if (input.startsWith('DEL_MSG_')) {
-      const msgId = input.replace('DEL_MSG_', '');
-      await firebaseFetch(`messages/${msgId}`, { method: 'DELETE' });
-      await sendMessage(senderId, { text: '🗑️ Message deleted.' });
-      return renderAdminPanel(senderId, userData);
-    }
-    if (input.startsWith('KEEP_MSG_')) {
-      const msgId = input.replace('KEEP_MSG_', '');
-      const msg = await firebaseFetch(`messages/${msgId}`) || {};
-      if (msg.reporters && Array.isArray(msg.reporters)) {
-        for (const repId of msg.reporters) {
-          const repUser = await firebaseFetch(`users/${repId}`);
-          if (repUser) {
-            const updatedBal = (repUser.rCoins || 0) + 1;
-            await firebaseFetch(`users/${repId}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ rCoins: updatedBal })
-            });
-            await sendMessage(repId, { text: `🎉 REPORT REWARD!\n\nA message you reported was approved. +1 Point credited!` });
-          }
-        }
-      }
-      await firebaseFetch(`messages/${msgId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reportCount: 0, reportReason: null, reporters: null })
-      });
-      await sendMessage(senderId, { text: '✅ Message kept and reporters rewarded.' });
-      return renderAdminPanel(senderId, userData);
-    }
-  }
-
-  // --- 8. ABSOLUTE DEFAULT FALLBACK ---
   clearUserState(senderId);
   return sendDashboard(senderId, userData);
 }
@@ -1163,7 +1260,7 @@ async function renderSearchResults(senderId, allMatches, pageIndex, searchTitle)
   quickReplies.push({ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' });
 
   setUserState(senderId, { step: 'VIEWING_SEARCH_RESULTS', searchResults: sliceMatches, allMatches, pageIndex, searchTitle });
-  return sendMessage(senderId, { text, quick_replies: quickReplies });
+  return sendMessage(senderId, { text, quick_replies: quickReplies }, true);
 }
 
 async function renderTrendingPages(senderId, pageIndex) {
@@ -1174,7 +1271,7 @@ async function renderTrendingPages(senderId, pageIndex) {
     .sort((a, b) => (b.ratingSum / b.ratingCount) - (a.ratingSum / a.ratingCount));
 
   if (sorted.length === 0) {
-    return sendMessage(senderId, { text: 'ℹ️ No rated messages yet.', quick_replies: getDynamicQuickReplies('DASHBOARD') });
+    return sendMessage(senderId, { text: 'ℹ️ No rated messages yet.', quick_replies: getDynamicQuickReplies('DASHBOARD') }, true);
   }
 
   return renderSearchResults(senderId, sorted, pageIndex, '🔥 TRENDING PAGES');
@@ -1189,7 +1286,7 @@ async function executeSearch(senderId, searchKeyword) {
     .filter(m => (m.targetName && m.targetName.includes(query)) || (m.displayName && m.displayName.toLowerCase().includes(query)) || (m.title && m.title.toLowerCase().includes(query)));
 
   if (matches.length === 0) {
-    await sendMessage(senderId, { text: `ℹ️ No entries found matching "${searchKeyword}".` });
+    await sendMessage(senderId, { text: `ℹ️ No entries found matching "${searchKeyword}".` }, true);
     return sendDashboard(senderId, await ensureUser(senderId));
   }
 
@@ -1218,10 +1315,9 @@ async function renderAdminPanel(senderId, userData) {
       { content_type: 'text', title: '🛡️ Review Reports', payload: 'STAFF_REPORTS' },
       { content_type: 'text', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
     ]
-  });
+  }, true);
 }
 
-// DELAY ONLY APPLIED FOR RANDOM CHAT
 async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role) {
   const userData = await ensureUser(senderId);
   const ratingDisp = formatRatingDisplay(data.ratingSum, data.ratingCount);
@@ -1242,37 +1338,7 @@ async function renderFullMessageWithDelay(senderId, msgId, data, quotaInfo, role
     ]
   };
 
-  // Delay / typing_on ONLY for Random chat if user is not VIP Level 2
-  if (userData.vipLevel === 2) {
-    return sendMessage(senderId, payload);
-  } else {
-    await sendSenderAction(senderId, 'typing_on');
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    return sendMessage(senderId, payload);
-  }
-}
-
-// INSTANT RENDERING FOR SEARCH / TRENDING / MOODS (No delay)
-async function renderFullMessageWithoutDelay(senderId, msgId, data, quotaInfo, role) {
-  const ratingDisp = formatRatingDisplay(data.ratingSum, data.ratingCount);
-  const quotaNote = `\n\n🪙 (10 Points deducted for reading)`;
-  const text = `📖 TO: ${data.displayName}\n🏷️ TITLE: ${data.title}\n👤 USER: ${data.authorCode || '#SYS999'}\n⭐ RATING: ${ratingDisp}\n\n"${data.body}"${quotaNote}`;
-
-  const payload = {
-    text,
-    quick_replies: [
-      { content_type: 'text', title: '⭐ 1', payload: `RATE_${msgId}_1` },
-      { content_type: 'text', title: '⭐ 2', payload: `RATE_${msgId}_2` },
-      { content_type: 'text', title: '⭐ 3', payload: `RATE_${msgId}_3` },
-      { content_type: 'text', title: '⭐ 4', payload: `RATE_${msgId}_4` },
-      { content_type: 'text', title: '⭐ 5', payload: `RATE_${msgId}_5` },
-      { content_type: 'text', title: '🚩 Report', payload: `REPORT_START_${msgId}` },
-      { content_type: 'text', title: '📜 Read Another', payload: '/random' },
-      { content_type: 'text', title: '📊 Dashboard', payload: 'USER_DASHBOARD' }
-    ]
-  };
-
-  return sendMessage(senderId, payload);
+  return sendMessage(senderId, payload, true);
 }
 
 async function sendDashboard(senderId, userData) {
@@ -1308,7 +1374,7 @@ async function sendDashboard(senderId, userData) {
   text += `--------------------`;
 
   const quickReplies = getDynamicQuickReplies('DASHBOARD', userData.role);
-  return sendMessage(senderId, { text, quick_replies: quickReplies });
+  return sendMessage(senderId, { text, quick_replies: quickReplies }, true);
 }
 
 async function sendNextReport(senderId, userData) {
@@ -1318,7 +1384,7 @@ async function sendNextReport(senderId, userData) {
     .filter(m => m.reportCount && m.reportCount > 0);
 
   if (reportedMsgs.length === 0) {
-    await sendMessage(senderId, { text: '🛡️ No pending reported messages to review.' });
+    await sendMessage(senderId, { text: '🛡️ No pending reported messages to review.' }, true);
     return renderAdminPanel(senderId, userData);
   }
 
@@ -1332,7 +1398,7 @@ async function sendNextReport(senderId, userData) {
       { content_type: 'text', title: '✅ Keep Message', payload: `KEEP_MSG_${current.id}` },
       { content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }
     ]
-  });
+  }, true);
 }
 
 const PORT = process.env.PORT || 3000;

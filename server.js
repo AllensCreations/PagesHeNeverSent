@@ -164,7 +164,6 @@ async function firebaseFetch(path, options = {}) {
   }
 }
 
-// NATIVE TYPING INDICATOR (Shows the three typing dots in Messenger)
 async function sendSenderAction(recipientId, action = 'typing_on') {
   if (!PAGE_ACCESS_TOKEN) return;
   try {
@@ -345,6 +344,33 @@ async function getActiveSubAnnouncements() {
   return { active: active.slice(0, 3), queued };
 }
 
+async function registerPersistentMenu() {
+  if (!PAGE_ACCESS_TOKEN) return;
+  try {
+    await fetch(`https://graph.facebook.com/v18.0/me/messenger_profile?access_token=${PAGE_ACCESS_TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        persistent_menu: [
+          {
+            locale: 'default',
+            composer_input_disabled: false,
+            call_to_actions: [
+              { type: 'postback', title: '📜 Random Page', payload: '/random' },
+              { type: 'postback', title: '🔍 Search Name', payload: '/search' },
+              { type: 'postback', title: '💬 Leave Message', payload: '/message' },
+              { type: 'postback', title: '📊 My Dashboard', payload: 'USER_DASHBOARD' }
+            ]
+          }
+        ]
+      })
+    });
+    console.log('Persistent Menu registered successfully!');
+  } catch (err) {
+    console.error('Persistent Menu Registration Error:', err);
+  }
+}
+
 async function autoSeedDataOnStartup() {
   if (!Array.isArray(seedData) || seedData.length === 0) return;
   const existingMsgs = await firebaseFetch('messages') || {};
@@ -480,12 +506,11 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'CHANGELOG_VIEW' || lowerInput === '📜 changelog') {
     clearUserState(senderId);
     return sendMessage(senderId, {
-      text: `📜 PLATFORM CHANGELOG (v2.8)\n\n• Added native Messenger typing indicator bubbles during read delays.\n• Integrated broadcast segmentation (Target All Users or VIP Members only).`,
+      text: `📜 PLATFORM CHANGELOG (v2.9)\n\n• Restored Persistent Menu integration.\n• Enhanced pagination controls (Max 5 items per page).`,
       quick_replies: getDynamicQuickReplies('CHANGELOG', userData.role)
     });
   }
 
-  // --- STAFF ADMIN PANEL & SEGMENTED BROADCAST ---
   if (input === 'ADMIN_PANEL' || lowerInput === '📢 staff panel') {
     clearUserState(senderId);
     if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
@@ -495,45 +520,6 @@ async function handleCommand(senderId, rawInput) {
   if (input === 'VIEW_STATS') {
     if (userData.role !== 'admin' && userData.role !== 'moderator') return sendDashboard(senderId, userData);
     return renderAdminPanel(senderId, userData);
-  }
-
-  if (input === 'ADMIN_BROADCAST_START') {
-    if (userData.role !== 'admin') return sendDashboard(senderId, userData);
-    setUserState(senderId, { step: 'WAITING_BROADCAST_SEGMENT' });
-    return sendMessage(senderId, {
-      text: `📢 BROADCAST SEGMENTATION\n\nWho would you like to send this announcement to?`,
-      quick_replies: [
-        { content_type: 'text', title: '👥 All Users', payload: 'BC_TARGET_ALL' },
-        { content_type: 'text', title: '🌟 VIP Members Only', payload: 'BC_TARGET_VIP' },
-        { content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }
-      ]
-    });
-  }
-
-  if (currentState?.step === 'WAITING_BROADCAST_SEGMENT') {
-    let targetSegment = 'ALL';
-    if (input === 'BC_TARGET_VIP') targetSegment = 'VIP';
-    setUserState(senderId, { step: 'WAITING_BROADCAST_MSG', targetSegment });
-    return sendMessage(senderId, {
-      text: `📢 Enter the announcement text for [ ${targetSegment} ] users:`,
-      quick_replies: [{ content_type: 'text', title: '❌ Cancel', payload: 'CANCEL_ACTION' }]
-    });
-  }
-
-  if (currentState?.step === 'WAITING_BROADCAST_MSG') {
-    const targetSegment = currentState.targetSegment || 'ALL';
-    clearUserState(senderId);
-
-    const allUsers = await firebaseFetch('users') || {};
-    for (const [uId, uData] of Object.entries(allUsers)) {
-      if (targetSegment === 'VIP' && !uData.isVIP) continue;
-      await sendMessage(uId, { text: `📢 ANNOUNCEMENT (${targetSegment})\n\n"${input}"\n\n— Pages He Never Sent` });
-    }
-
-    return sendMessage(senderId, {
-      text: `✅ Broadcast successfully sent to [ ${targetSegment} ] users!`,
-      quick_replies: [{ content_type: 'text', title: '📢 Staff Panel', payload: 'ADMIN_PANEL' }]
-    });
   }
 
   if (input === 'VIEW_PENDING_PAYMENTS') {
@@ -1375,4 +1361,5 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await autoSeedDataOnStartup();
+  await registerPersistentMenu();
 });
